@@ -1,4 +1,4 @@
-# ncu-profile-skill
+# ncu-report-skill
 
 A Claude Code skill for profiling CUDA kernels with Nsight Compute on NVIDIA B200 (sm_100). Covers the full workflow: build a standalone harness, run `ncu`, parse reports with the Python API, walk through six analysis dimensions, match patterns to a diagnosis playbook, and write an evidence-backed optimization report.
 
@@ -51,46 +51,46 @@ Keeps the skill version-controlled and easy to update; edits in the clone are pi
 
 ```bash
 # Clone somewhere stable
-git clone git@github.com:DongyunZou/ncu-profile-skill.git ~/workspace/ncu-profile-skill
+git clone git@github.com:DongyunZou/ncu-report-skill.git ~/workspace/ncu-report-skill
 
 # User-level install: make the skill available in every project
 mkdir -p ~/.claude/skills
-ln -s ~/workspace/ncu-profile-skill ~/.claude/skills/ncu-profile-skill
+ln -s ~/workspace/ncu-report-skill ~/.claude/skills/ncu-report-skill
 
 # Or project-level install: scope to one repo
 cd /path/to/other-repo
 mkdir -p .claude/skills
-ln -s ~/workspace/ncu-profile-skill .claude/skills/ncu-profile-skill
+ln -s ~/workspace/ncu-report-skill .claude/skills/ncu-report-skill
 ```
 
-Pull updates with `cd ~/workspace/ncu-profile-skill && git pull`. The symlinks pick up the new content automatically.
+Pull updates with `cd ~/workspace/ncu-report-skill && git pull`. The symlinks pick up the new content automatically.
 
 ### Option 2 — Copy into place
 
 If you prefer a static copy over a symlink:
 
 ```bash
-git clone git@github.com:DongyunZou/ncu-profile-skill.git /tmp/ncu
+git clone git@github.com:DongyunZou/ncu-report-skill.git /tmp/ncu
 mkdir -p ~/.claude/skills
-cp -r /tmp/ncu ~/.claude/skills/ncu-profile-skill
+cp -r /tmp/ncu ~/.claude/skills/ncu-report-skill
 ```
 
 ### Option 3 — Git submodule (for a project-level install committed alongside the repo)
 
 ```bash
 cd /path/to/other-repo
-git submodule add git@github.com:DongyunZou/ncu-profile-skill.git .claude/skills/ncu-profile-skill
-git commit -m "Add ncu-profile-skill as a submodule"
+git submodule add git@github.com:DongyunZou/ncu-report-skill.git .claude/skills/ncu-report-skill
+git commit -m "Add ncu-report-skill as a submodule"
 ```
 
 ---
 
 ## How Claude uses this skill
 
-Once installed at `~/.claude/skills/ncu-profile-skill/` (or project-level), Claude Code will:
+Once installed at `~/.claude/skills/ncu-report-skill/` (or project-level), Claude Code will:
 
 1. Advertise the skill's name + description in the system reminder of new conversations.
-2. Let the user invoke it manually via `/ncu-profile-skill` or let the model invoke it with the Skill tool when the conversation matches the `description` triggers.
+2. Let the user invoke it manually via `/ncu-report-skill` or let the model invoke it with the Skill tool when the conversation matches the `description` triggers.
 
 When invoked, Claude reads `SKILL.md`, follows its workflow (phases 0 → 6 in `reference/01-workflow.md`), and uses the helper scripts in `helpers/` as needed.
 
@@ -108,23 +108,23 @@ export PYTHONPATH=$PYTHONPATH:/usr/local/cuda-13.2/nsight-compute-2026.1.0/extra
 export RUN=/path/to/your/profile/myrun
 
 # Extract key metrics from one or more reports
-python3 ~/.claude/skills/ncu-profile-skill/helpers/analyze_reports.py \
+python3 ~/.claude/skills/ncu-report-skill/helpers/analyze_reports.py \
     --run-dir "$RUN" \
     --report "$RUN/reports/full_<tag>.ncu-rep" --tag <tag>
 
 # Per-line stall hotspots (requires a source-level .ncu-rep)
-python3 ~/.claude/skills/ncu-profile-skill/helpers/extract_stall_hotspots.py \
+python3 ~/.claude/skills/ncu-report-skill/helpers/extract_stall_hotspots.py \
     --run-dir "$RUN" \
     --report "$RUN/reports/source_<tag>.ncu-rep" --tag <tag>
 
 # ASCII PM-sampling timelines
-python3 ~/.claude/skills/ncu-profile-skill/helpers/plot_timeline.py \
+python3 ~/.claude/skills/ncu-report-skill/helpers/plot_timeline.py \
     --run-dir "$RUN" \
     --report "$RUN/reports/full_<tag>.ncu-rep" --tag <tag>
 
 # Browse a flashinfer-trace dataset to pick workload shapes
 export FIB_DATASET_PATH=/path/to/flashinfer-trace
-python3 ~/.claude/skills/ncu-profile-skill/helpers/list_flashinfer_workloads.py \
+python3 ~/.claude/skills/ncu-report-skill/helpers/list_flashinfer_workloads.py \
     --definition <your_definition_name>
 ```
 

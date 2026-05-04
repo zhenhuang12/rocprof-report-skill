@@ -1,5 +1,5 @@
 ---
-name: ncu-profile-skill
+name: ncu-report-skill
 description: Profile CUDA kernels with Nsight Compute on B200 / sm_100. Use when the user asks to profile a kernel, analyze its performance, diagnose bottlenecks, read an ncu report, or write an optimization plan — including variants in Chinese ("profile 一下", "为什么慢", "ncu 报告").
 ---
 
