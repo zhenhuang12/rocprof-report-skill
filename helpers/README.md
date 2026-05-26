@@ -12,16 +12,18 @@ Reusable code for AMD profiling harnesses and rocprof / rocprof-compute report a
 ### Typical harness setup
 
 ```bash
-cd profile/<run_name>/harness/
-cp /path/to/skills/rocprof-report-skill/helpers/harness_template.hip my_kernel_harness.hip
-cp /path/to/skills/rocprof-report-skill/helpers/safetensors_loader.h .
+export PROFILE_RUN_DIR=/abs/path/to/profile/<run_name>
+export SKILL=~/.claude/skills/rocprof-report-skill   # or wherever installed
+cp "$SKILL/helpers/harness_template.hip" "$PROFILE_RUN_DIR/harness/my_kernel_harness.hip"
+cp "$SKILL/helpers/safetensors_loader.h" "$PROFILE_RUN_DIR/harness/"
 # edit my_kernel_harness.hip to include your kernel + fill in main();
 # the template ships with a `#error HARNESS_FILLED_IN` guard — pass
 # -DHARNESS_FILLED_IN=1 once you've replaced its TODOs.
 hipcc -O3 -std=c++17 -gline-tables-only \
       --offload-arch=gfx942 -munsafe-fp-atomics \
       -DHARNESS_FILLED_IN=1 \
-      my_kernel_harness.hip -o my_kernel_harness
+      "$PROFILE_RUN_DIR/harness/my_kernel_harness.hip" \
+      -o "$PROFILE_RUN_DIR/harness/my_kernel_harness"
 ```
 
 For MI355X (gfx950), use `--offload-arch=gfx950` and ROCm 7+.
