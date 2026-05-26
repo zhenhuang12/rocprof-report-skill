@@ -59,7 +59,8 @@ python3 $SKILL/helpers/analyze_reports.py --run-dir $PROFILE_RUN_DIR \
 # rocprofv3 default layout (pcsamp_<tag>/<hostname>/<pid>_pc_sampling_{stochastic,host_trap}.csv),
 # the explicit flat form (pcsamp_<tag>/<prefix>_pc_sampling_*.csv when you passed
 # `--output-file <prefix>` to rocprofv3), and the older rocprof-compute-wrapped
-# layout (pmc_1/<host>/...), so you don't have to know the hostname or PID. Use
+# layout (out/pmc_<N>/<hostname>/...) as a defensive fallback, so you don't have
+# to know the hostname or PID. Use
 # --pcsamp <file> only when you need to pin a specific CSV. The helper prefers
 # the stochastic CSV when both modes are present — it's the only mode that
 # populates `Stall_Reason`.

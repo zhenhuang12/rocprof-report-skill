@@ -53,7 +53,7 @@ def _resolve_kernel_trace(rpc_dir: Path, tag: str, explicit: Path | None) -> Pat
     look for sibling `reports/trace_<tag>/**/kernel_trace.csv` next to rpc_dir.
 
     rocprofv3 writes kernel_trace under a nested
-    `<out>/pmc_1/<host>/<pid>_kernel_trace.csv` path when invoked via
+    `<out>/out/pmc_<N>/<hostname>/<pid>_kernel_trace.csv` path when invoked via
     rocprof-compute, and `kernel_trace.csv` at the top level when invoked as
     `rocprofv3 --kernel-trace -d <out>`. Glob both.
 

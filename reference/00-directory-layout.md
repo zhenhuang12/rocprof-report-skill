@@ -86,8 +86,9 @@ profile/<run_name>/
 │   │    artifacts move under a `<gpu_model>/` child — see note below.)
 │   ├── rpc_<tag2>/
 │   ├── rpc_ts_<tag1>/              ← (optional) `rocprofv3 -P` windowed output for timeline view
-│   │   └── <pid>_counter_collection.csv  ← one CSV per window; plot_timeline.py --per-cu
-│   │                                       is the currently supported timeline path
+│   │   └── <hostname>/<pid>_counter_collection.csv  ← one CSV per window (default nests under <hostname>/;
+│   │                                                  --output-file <prefix> flattens). plot_timeline.py
+│   │                                                  --per-cu is the currently supported timeline path
 │   ├── att_<tag1>/                 ← rocprofv3 --att output dir; default <hostname>/<pid>_*.{csv,json} (override via --output-file)
 │   ├── att_<tag2>/
 │   ├── pcsamp_<tag1>/              ← rocprofv3 --pc-sampling output dir; default <hostname>/<pid>_pc_sampling_{stochastic,host_trap}.csv (override via --output-file)

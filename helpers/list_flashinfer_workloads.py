@@ -138,7 +138,11 @@ def summarize_workloads(workloads: list[dict], axes_keys: list[str]) -> None:
 
     print(f"\nDistribution over {axes_keys} ({len(workloads)} workloads total):")
     print(f"  {' '.join(f'{a:>15}' for a in axes_keys)}  count")
-    for key, cnt in sorted(dist.items(), key=lambda x: x[0]):
+    # Coerce None to (True, None) so missing-axis tuples sort consistently
+    # without TypeError when other tuples carry ints/strs in the same slot.
+    def _sort_key(item):
+        return tuple((v is None, v) for v in item[0])
+    for key, cnt in sorted(dist.items(), key=_sort_key):
         print(f"  {' '.join(f'{str(v):>15}' for v in key)}  {cnt}")
 
 

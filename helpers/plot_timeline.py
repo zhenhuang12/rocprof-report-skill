@@ -95,11 +95,12 @@ def ascii_plot(vals, label, max_rows=20, max_cols=80):
         return [f"{label}: all zero"]
 
     ncols = min(max_cols, n)
-    bucket_size = max(1, n // ncols)
     buckets = []
+    # Use float boundaries to spread n samples across ncols buckets without
+    # dropping the trailing samples that floor division would orphan.
     for c in range(ncols):
-        s = c * bucket_size
-        e = min(n, (c + 1) * bucket_size)
+        s = (c * n) // ncols
+        e = ((c + 1) * n) // ncols
         chunk = active[s:e]
         buckets.append(sum(chunk) / len(chunk) if chunk else 0.0)
     mx = max(buckets) if buckets else 1.0

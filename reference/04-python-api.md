@@ -143,7 +143,13 @@ Then stitch the per-window CSVs in pandas (window index = synthetic time axis):
 ```python
 import os, glob, pandas as pd
 RUN = os.environ["PROFILE_RUN_DIR"]
-csvs = sorted(glob.glob(f"{RUN}/reports/rpc_ts_<tag>/*_counter_collection.csv"))
+# Default rocprofv3 layout nests as rpc_ts_<tag>/<hostname>/<pid>_counter_collection.csv;
+# --output-file <prefix> collapses to a flat rpc_ts_<tag>/<prefix>_counter_collection.csv.
+# Glob both.
+csvs = sorted(set(
+    glob.glob(f"{RUN}/reports/rpc_ts_<tag>/*_counter_collection.csv") +
+    glob.glob(f"{RUN}/reports/rpc_ts_<tag>/**/*_counter_collection.csv", recursive=True)
+))
 frames = []
 for i, p in enumerate(csvs):
     df = pd.read_csv(p)
@@ -162,7 +168,9 @@ For PC-sampling / ATT-style per-PC data (the AMD analog of NVIDIA's per-correlat
 # Pass `--output-file <prefix>` to collapse to a flat
 # `pcsamp_<tag>/<prefix>_pc_sampling_*.csv` (no <hostname>/<pid>_ default).
 # Glob accepts both the default <hostname>/ nesting, an explicit flat layout,
-# and the older rocprof-compute-wrapped form (pcsamp_<tag>/pmc_1/<host>/...).
+# and the defensive rocprof-compute-wrapped form (pcsamp_<tag>/out/pmc_<N>/<hostname>/...).
+# (Note: current rocprof-compute has no PC-sampling subcommand, so this third
+# layout is defensive — covered in case a future wrapper emits it.)
 import os, glob, pandas as pd
 RUN = os.environ["PROFILE_RUN_DIR"]
 csvs = sorted(set(

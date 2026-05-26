@@ -103,7 +103,8 @@ Minimal runnable command listing:
     │   │    or omitted `-p` — move the above under a `<gpu_model>/` or `<hostname>/`
     │   │    child; helpers handle either form.)
     │   ├── rpc_ts_<tag>/                   ← optional `rocprofv3 -P` windowed PMC pass
-    │   │   └── <pid>_counter_collection.csv ← one CSV per window; see Recipe 2b
+    │   │   └── <hostname>/<pid>_counter_collection.csv ← one CSV per window (default nests under <hostname>/;
+    │   │                                                  --output-file <prefix> flattens). See Recipe 2b.
     │   ├── pcsamp_<tag>/<hostname>/        ← rocprofv3 PC sampling output (default nests under <hostname>/)
     │   │   ├── <pid>_pc_sampling_stochastic.csv   ← stochastic mode: has the `Stall_Reason` column (use for breakdown)
     │   │   └── <pid>_pc_sampling_host_trap.csv    ← host_trap mode: per-line hotspots only (no `Stall_Reason`)

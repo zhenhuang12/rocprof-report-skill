@@ -56,7 +56,7 @@ Usage:
     # PC sampling (preferred — pass the CSV directly via --pcsamp, or
     # the directory via --pcsamp-dir and let the script glob inside it.
     # The dir glob accepts both the flat layout and the older nested
-    # `pmc_1/<host>/...` form as a fallback.)
+    # `out/pmc_<N>/<hostname>/...` form as a defensive fallback.)
     python3 extract_stall_hotspots.py --run-dir profile/myrun \\
             --pcsamp-dir profile/myrun/reports/pcsamp_<tag> \\
             --tag <tag>
@@ -267,9 +267,11 @@ def _resolve_pcsamp_dir(d):
         `<pcsamp_dir>/<hostname>/<pid>_pc_sampling_host_trap.csv`.
     Passing `--output-file <prefix>` collapses that to a flat
         `<pcsamp_dir>/<prefix>_pc_sampling_*.csv`.
-    The rocprof-compute wrapper produces a third, older `pmc_1/<host>/...`
-    layout. We rglob and accept all three so this script keeps working across
-    rocprofv3 versions and invocation styles.
+    A potential third layout — `out/pmc_<N>/<hostname>/...` from a future
+    rocprof-compute wrapper — is also accepted defensively (current
+    rocprof-compute has no PC-sampling subcommand). We rglob and accept all
+    three so this script keeps working across rocprofv3 versions and
+    invocation styles.
 
     When both stochastic and host_trap CSVs are present, we prefer **stochastic**
     — it's the only mode that emits the `Stall_Reason` column needed for a true
