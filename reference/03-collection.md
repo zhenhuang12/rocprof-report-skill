@@ -23,10 +23,10 @@ rocprofv3 --kernel-trace \
     --kernel-include-regex "YOUR_KERNEL_NAME" \
     -d /tmp/rocprof_smoke \
     -- ./harness [args]
-ls /tmp/rocprof_smoke   # should contain at least *_kernel_trace.csv (and *.db on ROCm 7+)
+find /tmp/rocprof_smoke -type f   # default: <hostname>/<pid>_kernel_trace.csv (and <pid>_results.db on ROCm 7+)
 ```
 
-If `kernel_trace.csv` is empty, the regex didn't match — verify with `llvm-objdump --syms --demangle`. If you get a permission error, see `09-common-issues.md`.
+If the resulting `*_kernel_trace.csv` is empty, the regex didn't match — verify with `llvm-objdump --syms --demangle`. If you get a permission error, see `09-common-issues.md`.
 
 ---
 

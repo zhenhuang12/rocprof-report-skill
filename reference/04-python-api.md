@@ -171,16 +171,15 @@ For PC-sampling / ATT-style per-PC data (the AMD analog of NVIDIA's per-correlat
 #   pcsamp_<tag>/<hostname>/<pid>_pc_sampling_host_trap.csv    (PCs only, NO Stall_Reason column)
 # Pass `--output-file <prefix>` to collapse to a flat
 # `pcsamp_<tag>/<prefix>_pc_sampling_*.csv` (no <hostname>/<pid>_ default).
-# Glob accepts both the default <hostname>/ nesting, an explicit flat layout,
-# and the defensive rocprof-compute-wrapped form (pcsamp_<tag>/out/pmc_<N>/<hostname>/...).
-# (Note: current rocprof-compute has no PC-sampling subcommand, so this third
-# layout is defensive — covered in case a future wrapper emits it.)
+# Glob accepts both the default <hostname>/ nesting and an explicit flat
+# `--output-file <prefix>` layout. rocprofv3 always emits a `<pid>_` (default)
+# or `<prefix>_` (with --output-file) filename prefix — there is no bare
+# `pc_sampling_*.csv` form to match.
 import os, glob, pandas as pd
 RUN = os.environ["PROFILE_RUN_DIR"]
 csvs = sorted(set(
     glob.glob(f"{RUN}/reports/pcsamp_<tag>/*_pc_sampling_*.csv") +
-    glob.glob(f"{RUN}/reports/pcsamp_<tag>/**/*_pc_sampling_*.csv", recursive=True) +
-    glob.glob(f"{RUN}/reports/pcsamp_<tag>/**/pc_sampling_*.csv", recursive=True)
+    glob.glob(f"{RUN}/reports/pcsamp_<tag>/**/*_pc_sampling_*.csv", recursive=True)
 ))
 if not csvs:
     raise FileNotFoundError(f"no pc_sampling CSV under {RUN}/reports/pcsamp_<tag>")

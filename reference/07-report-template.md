@@ -61,7 +61,8 @@ Minimal runnable command listing:
     # it only gives sampled PCs (good for per-line hotspots, but not for a
     # wait-reason breakdown).
     # See https://rocm.docs.amd.com/projects/rocprofiler-sdk/en/latest/how-to/using-pc-sampling.html
-    # Stochastic supports `--pc-sampling-unit cycles` or `instructions` (NOT `time`).
+    # Stochastic: use `--pc-sampling-unit cycles` (canonical; `instructions` exists
+    # in the SDK enum but may not be CLI-wired — verify first). `time` is rejected.
     # Output default: rocprofv3 nests under <hostname>/ with a PID prefix —
     #   pcsamp_<tag>/<hostname>/<pid>_pc_sampling_stochastic.csv
     # Pass `--output-file <prefix>` to collapse to a flat
