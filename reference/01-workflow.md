@@ -11,6 +11,7 @@ This is the complete checklist from "user asks to profile" to "final report". Ev
 ```bash
 # At the repo root. Use an absolute path so the var survives subshells / cd-ing.
 export PROFILE_RUN_DIR="$PWD/profile/<descriptive_run_name>"        # e.g. <kernel>_v1_baseline
+export SKILL=~/.claude/skills/rocprof-report-skill                  # or <repo>/.claude/skills/rocprof-report-skill
 mkdir -p "$PROFILE_RUN_DIR"/{harness,reports,analysis}
 ```
 
@@ -158,6 +159,28 @@ Minimum analysis artifacts to produce:
 | `stall_hotspots_<tag>.txt` | `extract_stall_hotspots.py` | Top source lines ranked by stall samples (from PC-sampling or ATT) |
 | `timeline_plots.txt` | `plot_timeline.py` | ASCII time-series plots — reveals tail effect visually |
 | `details_<tag>.txt` | `rocprof-compute analyze -p ...` | rocprof-compute's built-in section reports (each with peak-comparison + bottleneck hints). `--list-stats` lists kernels and dispatches (NOT section IDs); for section / metric IDs use `--list-metrics <gfx_arch>`. Omit both to get the full dump. |
+
+Canonical invocations (drop into a shell after Phase 3 completes):
+
+```bash
+# Key metrics + full PMC dump
+python3 "$SKILL/helpers/analyze_reports.py" --run-dir "$PROFILE_RUN_DIR" \
+    --rpc "$PROFILE_RUN_DIR/reports/rpc_<tag>" --tag <tag> \
+    --kernel "YOUR_KERNEL_SUBSTRING" --arch gfx942   # or gfx950 for MI355X
+
+# Per-source-line stall hotspots — --pcsamp-dir globs the nested rocprofv3
+# layout (pcsamp_<tag>/pmc_1/<host>/<pid>_pc_sampling_*.csv)
+python3 "$SKILL/helpers/extract_stall_hotspots.py" --run-dir "$PROFILE_RUN_DIR" \
+    --pcsamp-dir "$PROFILE_RUN_DIR/reports/pcsamp_<tag>" --tag <tag>
+
+# ASCII timeline (requires the optional --timeseries-sampling-rate pass — see Recipe 2b)
+python3 "$SKILL/helpers/plot_timeline.py" --run-dir "$PROFILE_RUN_DIR" \
+    --timeseries "$PROFILE_RUN_DIR/reports/rpc_ts_<tag>/pmc_perf_timeseries.csv" --tag <tag>
+
+# rocprof-compute's own section dump (SoL / per-block summaries with peak-comparison hints)
+rocprof-compute analyze -p "$PROFILE_RUN_DIR/reports/rpc_<tag>" \
+    > "$PROFILE_RUN_DIR/analysis/details_<tag>.txt"
+```
 
 Save everything under `$PROFILE_RUN_DIR/analysis/`. The user will want to re-inspect these; if two runs mix artifacts, you've already failed.
 

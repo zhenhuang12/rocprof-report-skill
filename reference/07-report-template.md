@@ -2,7 +2,7 @@
 
 The report is the deliverable. Everything else (rocprof-compute output dirs, ATT JSONs, CSVs) is evidence. Structure matters: a busy reader should see the top findings in 30 seconds and be able to drill into details if they want.
 
-Save as `$PROFILE_RUN_DIR/REPORT.md`.
+Save as `$PROFILE_RUN_DIR/REPORT.md`. Copy everything inside the fenced block below (drop the outer ```` ```markdown ```` / ```` ``` ```` fence) and fill in the placeholders.
 
 ---
 

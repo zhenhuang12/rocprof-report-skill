@@ -21,7 +21,13 @@ Most under-performing HIP kernels are under-performing for exactly one reason th
 
 ## Quickstart (what to do when someone says "profile this kernel")
 
-0. **Create a new run directory first** under `profile/<run_name>/` at the repo root — **one directory per run**, never reuse an existing one. Each run contains its own `harness/`, `reports/`, `analysis/`, and `REPORT.md`. This rule is mandatory in this repo. See [`reference/00-directory-layout.md`](reference/00-directory-layout.md).
+0. **Create a new run directory first** under `profile/<run_name>/` at the repo root — **one directory per run**, never reuse an existing one. Each run contains its own `harness/`, `reports/`, `analysis/`, and `REPORT.md`. This rule is mandatory in this repo. See [`reference/00-directory-layout.md`](reference/00-directory-layout.md). Pin both env vars up front; every later step uses them:
+
+   ```bash
+   export PROFILE_RUN_DIR="$PWD/profile/<run_name>"
+   export SKILL=~/.claude/skills/rocprof-report-skill   # or <repo>/.claude/skills/rocprof-report-skill
+   mkdir -p "$PROFILE_RUN_DIR"/{harness,reports,analysis}
+   ```
 
 1. **Decide what you're profiling.** What inputs? Which dispatch path? What question do you want answered? If the kernel takes variable-sized inputs (variable seq lengths, variable batch sizes), you must pick specific representative shapes from the user's workload — don't profile with arbitrary inputs.
 

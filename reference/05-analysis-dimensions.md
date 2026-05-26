@@ -83,6 +83,8 @@ last_wave_utilization_pct = last_wave_blocks / wkgs_in_flight * 100
 
 **What:** are workgroups finishing at roughly the same time, or do a few outliers drag out the kernel?
 
+> Requires the optional `--timeseries-sampling-rate` collection pass (Recipe 2b in [`03-collection.md`](03-collection.md)) for the timeline signal. The static `pmc_perf.csv` from Recipe 2 only gives the per-kernel average — it cannot reveal a tail.
+
 **Counters / signals:**
 
 ```
@@ -255,7 +257,7 @@ GRBM_GUI_ACTIVE                        # for normalizing to total time
 
 **MI300X (CDNA3 / gfx942) MFMA notes:**
 
-- Supported shapes for F32/F16/BF16: `mfma_*_{4x4x4, 16x16x4, 16x16x16, 32x32x4, 32x32x8}`. **I8 uses larger K**: `v_mfma_i32_{16x16x32, 32x32x16}_i8` (K doubled, since INT8 packs 4 bytes per 32-bit register). FP8 variants via OCP-FNUZ; FP64 added.
+- Supported shapes for F32/F16/BF16: `mfma_*_{4x4x4, 16x16x4, 16x16x16, 32x32x4, 32x32x8}`. **I8 uses larger K**: `v_mfma_i32_{16x16x32, 32x32x16}i8` (K doubled, since INT8 packs 4 bytes per 32-bit register; note the dtype glues to the tile shape with no underscore). FP8 variants via OCP-FNUZ; FP64 added.
 - Accumulators live in **AGPR** (not VGPR). When `Scratch_Per_Workitem > 0` *and* MFMA-heavy, suspect over-allocation of AGPR forcing spill.
 - Use `v_mfma_f32_32x32x8bf16_1k` (or `v_mfma_f32_16x16x16bf16_1k`) over the older 16x16x4 — same throughput per cycle but better register reuse. The `_1k` suffix is the AMD-canonical name in the LLVM/AMDGPU back-end for the 1-block form.
 
@@ -274,6 +276,8 @@ GRBM_GUI_ACTIVE                        # for normalizing to total time
 ## Dimension 5 — CU utilization timeline
 
 **What:** how does CU utilization vary over the kernel's lifetime?
+
+> Requires the optional `--timeseries-sampling-rate` collection pass (Recipe 2b in [`03-collection.md`](03-collection.md)). The default Recipe 2 produces only per-kernel averages.
 
 **Counters (rocprof-compute timeseries mode):**
 ```

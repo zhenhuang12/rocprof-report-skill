@@ -171,20 +171,20 @@ Scalars are inline; tensors live in the safetensors blob at the given relative p
 export FIB_DATASET_PATH=/abs/path/to/flashinfer-trace
 
 # (1) Inspect the definition: axes (which are const vs var), input/output shapes, dtypes
-python3 list_flashinfer_workloads.py --definition <name> --show-definition
+python3 "$SKILL/helpers/list_flashinfer_workloads.py" --definition <name> --show-definition
 
 # (2) See the shape distribution across all workloads (default mode)
-python3 list_flashinfer_workloads.py --definition <name>
+python3 "$SKILL/helpers/list_flashinfer_workloads.py" --definition <name>
 
 # (3) List all workloads matching a filter — gives UUIDs + absolute safetensors paths
-python3 list_flashinfer_workloads.py --definition <name> --list --filter <axis>=<value>
+python3 "$SKILL/helpers/list_flashinfer_workloads.py" --definition <name> --list --filter <axis>=<value>
 
 # (4) One representative per unique (axis1, axis2, ...) combination —
 #     useful for dispatch coverage
-python3 list_flashinfer_workloads.py --definition <name> --unique-axes <axis1>,<axis2>
+python3 "$SKILL/helpers/list_flashinfer_workloads.py" --definition <name> --unique-axes <axis1>,<axis2>
 
 # (5) Look up a specific UUID — prints axes, scalar inputs, absolute safetensors path
-python3 list_flashinfer_workloads.py --definition <name> --uuid <uuid>
+python3 "$SKILL/helpers/list_flashinfer_workloads.py" --definition <name> --uuid <uuid>
 ```
 
 Use steps (1-2) to understand the shape space, then (3) or (4) to pick a few representative UUIDs. Copy the absolute safetensors path straight into your harness's `--workload` CLI argument, or hardcode it in a small launcher script.

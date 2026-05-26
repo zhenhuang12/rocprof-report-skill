@@ -112,6 +112,7 @@ The Python helpers work standalone on any rocprof / rocprof-compute output you h
 # Create a run directory (the reference/ docs and Python helpers expect this exact var name)
 export PROFILE_RUN_DIR=/path/to/your/profile/myrun
 export SKILL=~/.claude/skills/rocprof-report-skill
+mkdir -p "$PROFILE_RUN_DIR"/{harness,reports,analysis}
 
 # Extract key metrics from a rocprof-compute "profile" output directory.
 # Pass --arch explicitly (gfx942 for MI300X, gfx950 for MI355X) and
