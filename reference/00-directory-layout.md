@@ -81,8 +81,8 @@ profile/<run_name>/
 │   ├── rpc_<tag2>/
 │   ├── att_<tag1>/                 ← rocprofv3 --att output dir (JSON traces per CU)
 │   ├── att_<tag2>/
-│   ├── pcsamp_<tag1>.csv           ← rocprofv3 --pc-sampling-method output
-│   └── pcsamp_<tag2>.csv
+│   ├── pcsamp_<tag1>/              ← rocprofv3 --pc-sampling output dir (CSV per kernel)
+│   └── pcsamp_<tag2>/
 └── analysis/
     ├── analyze_reports.py          ← the script that produced the extractions
     ├── extract_stall_hotspots.py
@@ -93,7 +93,7 @@ profile/<run_name>/
     ├── details_<tag>.txt           ← rocprof-compute analyze section dump
     ├── stall_hotspots_<tag>.txt    ← per-line stall aggregation (from ATT / PC-sampling)
     ├── timeline_imbalance_<tag>.txt
-    ├── pmc_timeline_plots.txt      ← ASCII time-series
+    ├── timeline_plots.txt          ← ASCII time-series (from plot_timeline.py)
     └── raw_<tag>.csv               ← optional: cleaned PMC csv export
 ```
 

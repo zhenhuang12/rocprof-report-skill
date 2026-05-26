@@ -34,6 +34,14 @@ from rocprof_utils import (  # noqa: E402
 )
 
 
+_TAG_SAFE = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-")
+
+
+def _safe_tag(tag: str) -> str:
+    """Make a tag safe to embed in a filename: keep [A-Za-z0-9._-], else '_'."""
+    return "".join(ch if ch in _TAG_SAFE else "_" for ch in tag) or "untagged"
+
+
 def collect(rpc_dir: Path, tag: str, analysis_dir: Path, kernel_regex, arch) -> dict:
     rpc = load_rpc_dir(rpc_dir, kernel_regex=kernel_regex)
     arch_used = arch or detect_arch(rpc) or "gfx942"
@@ -59,14 +67,18 @@ def compare(collected: dict, analysis_dir: Path, arch):
     if len(tags) < 2:
         return
     keys = key_counters_for_arch(arch or "gfx942")
-    out_path = analysis_dir / f"compare_{'_vs_'.join(tags)}.txt"
+    safe_tags = [_safe_tag(t) for t in tags]
+    out_path = analysis_dir / f"compare_{'_vs_'.join(safe_tags)}.txt"
     with open(out_path, "w") as f:
         col_w = max(20, max(len(t) for t in tags) + 2)
         f.write(f"{'Counter':<60}")
         for t in tags:
             f.write(f"{t:>{col_w}}")
-        f.write(f"{'change':>10}\n")
-        f.write("-" * (60 + col_w * len(tags) + 10) + "\n")
+        # "change" always compares LAST vs FIRST; rename to make that explicit
+        # when there are 3+ tags.
+        change_label = f"{tags[-1]}/{tags[0]}-1"
+        f.write(f"{change_label:>14}\n")
+        f.write("-" * (60 + col_w * len(tags) + 14) + "\n")
 
         # Duration row first
         f.write(f"{'__duration_ns__':<60}")
@@ -86,7 +98,7 @@ def compare(collected: dict, analysis_dir: Path, arch):
                 v = collected[t].get(k, "N/A")
                 vals.append(v)
                 if isinstance(v, (int, float)):
-                    f.write(f"{v:>{col_w}.4g}")
+                    f.write(f"{v:>{col_w}.6g}")
                 else:
                     f.write(f"{str(v):>{col_w}}")
             if (isinstance(vals[0], (int, float)) and isinstance(vals[-1], (int, float))

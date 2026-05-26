@@ -17,11 +17,9 @@ This module avoids hard dependencies on `rocpd` — it falls back to plain
 """
 from __future__ import annotations
 
-import glob
 import json
-import os
+import re
 import sqlite3
-import sys
 from pathlib import Path
 
 try:
@@ -157,7 +155,7 @@ def kernel_duration_ns(rpc):
 # given gfx target with ROCm 6.4 / 7.x. For a fuller list and rationale see
 # ../reference/08-mi300x-mi355x-counter-names.md. Other gfx targets and future
 # ROCm releases may need alternate names — always verify with
-# `enumerate_counters(rpc_dir)` or `rocprofv3 --list-metrics`.
+# `enumerate_counters(rpc_dir)` or `rocprofv3 -L` (a.k.a. `--list-avail`).
 
 _COMMON_GEOMETRY = [
     # pmc_perf.csv per-dispatch columns (not strictly PMCs but useful)
@@ -175,13 +173,14 @@ _COMMON_SQ = [
     "SQ_INSTS_SMEM", "SQ_INSTS_FLAT", "SQ_INSTS_FLAT_LDS_ONLY",
     "SQ_INSTS_LDS", "SQ_INSTS_BRANCH", "SQ_INSTS_MFMA",
     "SQ_BUSY_CYCLES",
-    "SQ_ACTIVE_INST_VALU", "SQ_ACTIVE_INST_VMEM",
     "SQ_VALU_MFMA_BUSY_CYCLES",
-    # Wait reasons (analog of NVIDIA stall reasons)
-    "SQ_WAIT_INST_VMEM", "SQ_WAIT_INST_LDS", "SQ_WAIT_ANY_LDS",
-    "SQ_WAIT_INST_VSCRATCH", "SQ_WAIT_INST_SMEM",
-    "SQ_WAIT_INST_SCA", "SQ_WAIT_INST_VEC", "SQ_WAIT_INST_MISC",
-    "SQ_WAIT_BARRIER", "SQ_WAIT_INST_FLAT",
+    # Wait reasons (analog of NVIDIA stall reasons) — verified set on gfx942 /
+    # gfx950 with ROCm 6.4 / 7.x. Names with no stable counter (INST_VEC,
+    # INST_SCA, INST_VSCRATCH, ANY_LDS, ANY) were removed; verify on your
+    # install with `rocprofv3 -L | grep SQ_WAIT` before extending this list.
+    "SQ_WAIT_INST_VMEM", "SQ_WAIT_INST_LDS", "SQ_WAIT_INST_SMEM",
+    "SQ_WAIT_INST_FLAT", "SQ_WAIT_INST_EXP", "SQ_WAIT_INST_MISC",
+    "SQ_WAIT_BARRIER",
     "SQ_WAIT_VMCNT", "SQ_WAIT_LGKMCNT", "SQ_WAIT_EXPCNT",
     "SQ_INST_LEVEL_VMEM", "SQ_INST_LEVEL_LDS",
     # LDS
@@ -217,26 +216,31 @@ _COMMON_GRBM = [
     "GRBM_GUI_ACTIVE", "GRBM_COUNT", "GRBM_CP_BUSY", "GRBM_SDMA_BUSY",
 ]
 
-# CDNA3 (gfx942 / MI300X / MI300A) — adds per-shape MFMA + FNUZ FP8
+# Per-dtype MFMA op counts on gfx942 / gfx950 use the prefix
+#   SQ_INSTS_VALU_MFMA_MOPS_<DTYPE>
+# The per-tile-shape names (e.g. SQ_INSTS_MFMA_F32_16X16X16BF16) are NOT a
+# stable PMC set across ROCm releases — they're sometimes derived metrics, and
+# the exact spelling shifts between gfx942 and gfx950. Always confirm with
+# `rocprofv3 -L | grep -i mfma` before extending these lists.
+#
+# CDNA3 (gfx942 / MI300X / MI300A) — FNUZ FP8 plus the integer / float dtypes.
 MI300X_MFMA = [
-    "SQ_INSTS_MFMA_F16", "SQ_INSTS_MFMA_BF16",
-    "SQ_INSTS_MFMA_F32", "SQ_INSTS_MFMA_F64", "SQ_INSTS_MFMA_I8",
-    "SQ_INSTS_MFMA_F32_16X16X16BF16",
-    "SQ_INSTS_MFMA_F32_32X32X8BF16",
-    "SQ_INSTS_MFMA_F32_16X16X32_FP8",
-    "SQ_INSTS_MFMA_F32_32X32X16_FP8",
+    "SQ_INSTS_MFMA",                            # aggregate MFMA op count
+    "SQ_INSTS_VALU_MFMA_MOPS_F16",
+    "SQ_INSTS_VALU_MFMA_MOPS_BF16",
+    "SQ_INSTS_VALU_MFMA_MOPS_F32",
+    "SQ_INSTS_VALU_MFMA_MOPS_F64",
+    "SQ_INSTS_VALU_MFMA_MOPS_I8",
+    "SQ_INSTS_VALU_MFMA_MOPS_F8",               # FNUZ on CDNA3
 ]
 
-# CDNA4 (gfx950 / MI355X) — adds FP4/FP6/MXFP/sparse + OCP standard FP8
+# CDNA4 (gfx950 / MI355X) — adds OCP standard FP8 + FP6/FP4/MXFP.
 MI355X_MFMA = MI300X_MFMA + [
-    "SQ_INSTS_MFMA_F32_16X16X32_F8F6F4",
-    "SQ_INSTS_MFMA_F32_32X32X16_F8F6F4",
-    "SQ_INSTS_MFMA_F32_16X16X32_MXF8",
-    "SQ_INSTS_MFMA_F32_16X16X32_MXF6",
-    "SQ_INSTS_MFMA_F32_16X16X64_MXF4",
-    "SQ_INSTS_MFMA_F32_16X16X32_F4",
-    "SQ_INSTS_MFMA_F32_16X16X32_F6",
-    "SQ_INSTS_MFMA_SPARSE_F32_16X16X32_BF16",
+    "SQ_INSTS_VALU_MFMA_MOPS_F6",
+    "SQ_INSTS_VALU_MFMA_MOPS_F4",
+    "SQ_INSTS_VALU_MFMA_MOPS_MXFP8",
+    "SQ_INSTS_VALU_MFMA_MOPS_MXFP6",
+    "SQ_INSTS_VALU_MFMA_MOPS_MXFP4",
 ]
 
 MI300X_KEY_COUNTERS = (
@@ -405,12 +409,27 @@ def stall_hotspots_per_line(pcs_df, top=30):
 # --- rocpd / .db helpers ----------------------------------------------------
 
 def find_db_in(trace_dir):
-    """Return the path to the first .db file in trace_dir, or None."""
-    for p in Path(trace_dir).glob("*.db"):
-        return p
-    for p in Path(trace_dir).glob("**/*.db"):
-        return p
-    return None
+    """Return the path to a .db file in trace_dir, or None.
+
+    Prefers a top-level match, then recurses. Sorts deterministically and
+    raises if multiple candidates exist at the same depth.
+    """
+    base = Path(trace_dir)
+    top = sorted(base.glob("*.db"))
+    if len(top) > 1:
+        raise RuntimeError(
+            f"multiple .db files in {base}: {[p.name for p in top]}; "
+            "pass the explicit path."
+        )
+    if top:
+        return top[0]
+    nested = sorted(base.glob("**/*.db"))
+    if len(nested) > 1:
+        raise RuntimeError(
+            f"multiple .db files under {base}: {[str(p.relative_to(base)) for p in nested]}; "
+            "pass the explicit path."
+        )
+    return nested[0] if nested else None
 
 
 def per_kernel_durations_from_db(db_path, name_filter=None):
@@ -467,6 +486,10 @@ def parse_analyze_text(path):
     Returns dict[section_id_str] -> list-of-rows. We don't try to type-coerce;
     that's the caller's job. Use this for diffing two `details_<tag>.txt` files.
     """
+    # rocprof-compute marks sections like "2.1.15 Memory — vL1 Cache"
+    # (a triple-dotted numeric ID, then whitespace, then a title). Requiring
+    # 2+ dots rejects plain numeric data rows like "3.14 ms" or "4.5e-3".
+    section_re = re.compile(r"^(\d+(?:\.\d+){2,})\s+\S")
     out = {}
     current = None
     rows = []
@@ -474,12 +497,11 @@ def parse_analyze_text(path):
         stripped = line.strip()
         if not stripped:
             continue
-        # rocprof-compute marks sections like "2.1.15 Memory — vL1 Cache"
-        if stripped[0:1].isdigit() and "." in stripped[:6]:
+        m = section_re.match(stripped)
+        if m:
             if current is not None:
                 out[current] = rows
-            head = stripped.split(maxsplit=1)
-            current = head[0]
+            current = m.group(1)
             rows = []
             continue
         rows.append(line)

@@ -85,10 +85,11 @@ For JIT / framework-integrated builds:
 
 ## PC sampling silently no-ops
 
-1. **Method not supported on your hardware.** Try `--pc-sampling-method host-trap` first — it works on MI200+ and is the most portable. `stochastic` is lower-overhead but requires MI300+ and a recent ROCm build with the kernel-mode feature compiled in.
-2. **Sampling interval too coarse.** `--pc-sampling-interval 1000000 --pc-sampling-unit cycles` may produce no samples for a 100 µs kernel. Drop to `1000` or `100`.
-3. **Kernel too short.** Kernels under ~50 µs may not produce useful sample counts. Increase work in the harness (run the kernel in a small loop — but be aware rocprofv3 replays each PMC group, so this can blow up wall time).
-4. **Permission issue.** Some ROCm builds require `CAP_PERFMON` for PC sampling. Try `sudo` to confirm it's a perms issue.
+1. **Beta flag missing.** PC sampling is gated behind a beta flag in ROCm 6.4+. The CLI needs `--pc-sampling-beta-enabled` (or set `ROCPROFILER_PC_SAMPLING_BETA_ENABLED=1` in the environment).
+2. **Method not supported on your hardware.** Try `--pc-sampling-method host_trap` first (note the underscore, not `host-trap`) — it works on MI200+ and is the most portable. `stochastic` is lower-overhead but requires MI300+ and a recent ROCm build with the kernel-mode feature compiled in.
+3. **Sampling interval too coarse.** `--pc-sampling-interval 1000000 --pc-sampling-unit cycles` may produce no samples for a 100 µs kernel. Drop to `1000` or `100`.
+4. **Kernel too short.** Kernels under ~50 µs may not produce useful sample counts. Increase work in the harness (run the kernel in a small loop — but be aware rocprofv3 replays each PMC group, so this can blow up wall time).
+5. **Permission issue.** Some ROCm builds require `CAP_PERFMON` for PC sampling. Try `sudo` to confirm it's a perms issue.
 
 ---
 
@@ -233,7 +234,7 @@ Always check both SoL gaps:
 
 Achieved occupancy < theoretical means waves can't all be resident — usually VGPR/AGPR or LDS pressure. Check `Launch Statistics` (§2.1.0):
 - High `VGPRs` (>128/wave) → register pressure
-- High `LDS_Per_Workgroup` (>32 KB on CDNA3, >80 KB on CDNA4) → LDS pressure
+- High `LDS_Per_Workgroup` relative to CU LDS budget (64 KB/CU on gfx942) → LDS pressure limits resident workgroups
 - Non-zero `Scratch_Per_Workitem` → spill (kills perf)
 
 Fix: shrink VGPR with `__launch_bounds__`, refactor to use AGPR for MFMA accumulators (CDNA3+), pad/cut LDS allocation, hoist loop-invariants out of the kernel.
@@ -242,7 +243,7 @@ Fix: shrink VGPR with `__launch_bounds__`, refactor to use AGPR for MFMA accumul
 
 Either:
 1. The compiler didn't emit MFMA — check the ISA: `llvm-objdump --disassemble --arch=gfx942 harness | grep -i mfma`.
-2. The PMC group containing `SQ_INSTS_MFMA_*` wasn't collected. Rerun rocprof-compute or add `--pmc SQ_INSTS_MFMA`.
+2. The PMC group containing the MFMA counters wasn't collected. Rerun rocprof-compute or add `--pmc SQ_INSTS_MFMA` (aggregate) or the relevant `SQ_INSTS_VALU_MFMA_MOPS_<DTYPE>` counter for the per-dtype breakdown.
 3. You're using Composable Kernel / hipBLASLt but profiling a wrapper that calls them indirectly — make sure the regex matches the actual MFMA-emitting kernel, not the launcher.
 
 ---
@@ -254,8 +255,8 @@ Either:
 | `rocprofv3` | 6.2 | Default profiling tool from 6.2 forward |
 | `rocprof-compute` | 6.3 | Formerly Omniperf, formerly Omnitrace |
 | ATT / SQTT | 6.0 (rocprof) / 6.2 (rocprofv3) | Capture per SE/CU |
-| PC sampling (host-trap) | 6.2 | MI200+ |
-| PC sampling (stochastic) | 6.3 | MI300+ |
+| PC sampling (`host_trap`) | 6.2 | MI200+; ROCm 6.4+ also requires `--pc-sampling-beta-enabled` |
+| PC sampling (`stochastic`) | 6.3 | MI300+; same beta-flag requirement as above |
 | Rocpd `.db` default | 7.0 | Single SQLite vs many CSVs |
 | MI300X (gfx942) discrete | 6.0 | Full support |
 | MI300A APU (gfx942 APU) | 6.0 | Shares counters with discrete; xGMI traffic visible |

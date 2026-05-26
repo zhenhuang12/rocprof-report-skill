@@ -148,7 +148,11 @@ def safetensors_path_for(dataset: Path, workload: dict) -> Path | None:
         if isinstance(inp, dict) and inp.get("type") == "safetensors":
             rel = inp.get("path")
             if rel:
-                abs_path = dataset / rel.lstrip("./")
+                # `lstrip("./")` is char-set based and silently drops "../"
+                # prefixes too; use removeprefix to strip only the literal
+                # leading "./".
+                rel = rel.removeprefix("./")
+                abs_path = dataset / rel
                 return abs_path.resolve()
     return None
 
@@ -266,6 +270,8 @@ def main():
 
     # Default: summary.
     summarize_definition(def_path)
+    if not workloads:
+        sys.exit(f"No workloads in {wl_path}; nothing to summarize.")
     if args.axes:
         axis_keys = [k.strip() for k in args.axes.split(",") if k.strip()]
     else:

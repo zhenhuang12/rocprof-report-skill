@@ -6,8 +6,8 @@ If you are coming from NVIDIA, the most important mental adjustments are:
 
 1. **Wave size is 64**, not 32. Affects `__syncwarp`-style code, ballot ops, and per-thread arithmetic for tile sizes.
 2. **No tensor memory accelerator (TMA), no TMEM**: data movement is per-lane LDS / global loads. CDNA3+ has `global_load_lds` (direct-to-LDS) which is the closest analog and the right tool for double-buffered prefetch.
-3. **Matrix cores use MFMA intrinsics + AGPR**: a separate per-SIMD accumulator register file (256 AGPR + 256 VGPR per SIMD on CDNA3; the same physical pool partitions differently on CDNA4). MFMA writes to AGPR; you copy in/out via `v_accvgpr_*`.
-4. **No L1 data cache** in the NVIDIA sense — there's a per-CU vector L1 (TCP / vL1, 16 KB read-only-ish on CDNA3), but its hit rate is usually much lower than NVIDIA's L1. Use LDS for reuse.
+3. **Matrix cores use MFMA intrinsics + AGPR**: an accumulator register file separate from VGPR on CDNA3 (gfx942) — 256 VGPR + 256 AGPR per SIMD, totalling 512 × 32-bit. CDNA4 (gfx950) repartitions the same physical pool more flexibly between VGPR and AGPR. MFMA writes to AGPR; copy between the two via `v_accvgpr_*`.
+4. **No L1 data cache** in the NVIDIA sense — there's a per-CU vector L1 (TCP / vL1, 32 KB on gfx942 / gfx950), but its hit rate is usually much lower than NVIDIA's L1. Use LDS for reuse.
 5. **Scratch memory lives in HBM**, not L1. Register spill is much more expensive than on NVIDIA; budget VGPR with `__launch_bounds__`.
 6. **Front-end issue is per-wave64, not per-warp32**: a divergent branch on 64 lanes is twice as costly. Avoid divergent control flow more aggressively than on NVIDIA.
 7. **Atomics**: `-munsafe-fp-atomics` is the analog of NVIDIA's hardware FP atomic ops; without it, hipcc emits CAS loops.
@@ -26,7 +26,7 @@ If you are coming from NVIDIA, the most important mental adjustments are:
 | VGPR per SIMD | 256 × 32-bit | 256 |
 | AGPR per SIMD | 256 × 32-bit (separately addressable, used by MFMA) | 256 |
 | LDS per CU | 64 KB (32 banks × 4 B) | 64 KB |
-| Vector L1 (TCP) | per-CU, 16 KB | per-CU, 16 KB |
+| Vector L1 (TCP) | per-CU, 32 KB | per-CU, 32 KB |
 | L2 (TCC) | per-XCD, 4 MB | per-XCD, 4 MB |
 | **Infinity Cache (MALL)** | **256 MB shared across XCDs** | shared with CPU |
 | HBM | 192 GB HBM3 @ 5.3 TB/s | 128 GB unified |
@@ -43,24 +43,24 @@ If you are coming from NVIDIA, the most important mental adjustments are:
 
 | Property | MI355X |
 |---|---|
-| Compute Units | 256 (2 IODs × 8 XCDs × 16 CUs per XCD, or similar — see ROCm 7 release notes) |
+| Compute Units | 256 (8 XCDs × 32 CUs, organized over 2 IODs) |
 | SIMDs per CU | 4 |
 | Wave size | 64 |
-| VGPR / AGPR per SIMD | 256 each, but pool repartitionable (more flexible than CDNA3) |
-| LDS per CU | **160 KB** (up from 64 KB on CDNA3) |
-| Vector L1 (TCP) | per-CU, 32 KB (doubled) |
+| VGPR / AGPR per SIMD | 256 each (pool more flexibly partitionable than CDNA3) |
+| LDS per CU | 64 KB (unchanged from CDNA3) |
+| Vector L1 (TCP) | per-CU, 32 KB (same as CDNA3 gfx942) |
 | L2 (TCC) | per-XCD, 4 MB |
-| **Infinity Cache** | **removed on CDNA4** — relies on HBM3E BW directly |
+| **Infinity Cache** | **256 MB retained** (coupled to HBM3E in CDNA4) |
 | HBM | 288 GB HBM3E @ 8.0 TB/s |
-| Peak FP64 (MFMA) | ~halved vs CDNA3 (~80 TFLOPS) |
-| Peak BF16/FP16 (MFMA) | ~higher than CDNA3 |
-| Peak FP8 (MFMA, OCP standard) | ~5 PFLOPS dense |
-| Peak FP6 / FP4 / MXFP | new — see MFMA shape table below |
+| Peak FP64 (MFMA) | ~halved vs CDNA3 |
+| Peak BF16/FP16 (MFMA) | higher than CDNA3 |
+| Peak FP8 (MFMA, OCP standard) | substantially higher than CDNA3 |
+| Peak FP6 / FP4 / MXFP | new on CDNA4 — see MFMA shape table below |
 | TF32 | **removed** |
-| 2:4 sparsity | **added** — SQ_INSTS_MFMA_SPARSE_* |
-| `global_load_lds` width | **widened to 128 bits/lane** (4× CDNA3) — major double-buffering improvement |
-| Compute partitions | SPX / CPX (others depend on ROCm 7 final) |
-| Memory partitions | NPS1 / NPS2 (typically; check rocm-smi) |
+| 2:4 sparsity | **added** |
+| `global_load_lds` widths | wider per-lane variants than CDNA3 (check the LLVM intrinsic / ISA reference for the exact widths your toolchain emits) |
+| Compute partitions | SPX / CPX (other modes depend on ROCm 7 release) |
+| Memory partitions | NPS1 / NPS2 (check `rocm-smi --showmemorypartition`) |
 
 ### Per-XCD layout (MI300X NPS1 SPX, the default)
 
@@ -131,12 +131,12 @@ On CDNA, each SIMD has two architecturally separate 256-entry × 32-bit register
 MFMA reads sources from VGPR (or AGPR via `accumulate=true`) and writes results to AGPR. To use MFMA productively:
 
 ```cpp
-// 16x16x16 BF16 -> FP32 example (CDNA3+)
-using fragment = __attribute__((__vector_size__(4 * sizeof(float)))) float;
-fragment acc = {0.f, 0.f, 0.f, 0.f};         // 4 FP32 accumulators per lane → AGPR
-__attribute__((__vector_size__(4 * sizeof(short)))) short a = ...;
-__attribute__((__vector_size__(4 * sizeof(short)))) short b = ...;
-acc = __builtin_amdgcn_mfma_f32_16x16x16bf16_1k(a, b, acc, /*cbsz*/0, /*abid*/0, /*blgp*/0);
+// 16x16x16 BF16 -> FP32 example (CDNA3+). The exact vector / fragment types are
+// compiler-version-specific; rocWMMA / Composable Kernel wrap this correctly.
+// Pseudocode showing the operand shape:
+//   acc:    4-lane FP32 accumulator vector (→ AGPR)
+//   a, b:   4-lane BF16 source vectors    (→ VGPR)
+//   acc = mfma_f32_16x16x16bf16_1k(a, b, acc, cbsz=0, abid=0, blgp=0);
 ```
 
 The full MFMA intrinsic list lives in `clang/include/clang/Basic/BuiltinsAMDGPU.def`. Composable Kernel (CK) and rocWMMA wrap these.
@@ -210,7 +210,7 @@ Peak throughput (per CU, per cycle, dense): the bigger tile (32x32x8 vs 16x16x16
 
 ## LDS (Local Data Share) — the AMD shared memory
 
-LDS is per-CU, 32 banks of 4 bytes each (so 128 bytes per cycle peak). On CDNA3 it's 64 KB per CU; on CDNA4 it's **160 KB per CU**, which substantially reduces tiling pressure.
+LDS is per-CU, 32 banks of 4 bytes each (so 128 bytes per cycle peak), 64 KB per CU on both CDNA3 (gfx942) and CDNA4 (gfx950).
 
 ### Bank conflicts
 
@@ -222,14 +222,11 @@ The bank function is `bank = (addr / 4) mod 32`. Two waves accessing the same ba
 __shared__ float tile[BM][BK + 1];   // +1 padding
 ```
 
-With CDNA4's 160 KB LDS, you can afford bigger tiles before padding becomes a constraint.
+Use `ds_read_b128` where the data layout allows — it spreads each lane's request across 4 banks, which naturally avoids most regular-stride conflicts.
 
 ### `global_load_lds` — direct-to-LDS prefetch
 
-CDNA3+ has `s_buffer_load_dwordx4` / `global_load_lds_dwordx4` (depending on addressing) that load directly from HBM into LDS, bypassing VGPR. This is the **double-buffer trick** for matrix kernels and the AMD analog of NVIDIA's `cp.async`:
-
-- CDNA3: 32 bits per lane per instruction.
-- **CDNA4: widened to 128 bits per lane** — 4× the LDS-fill rate.
+CDNA3+ has `s_buffer_load_*` / `global_load_lds_*` (depending on addressing) variants that load directly from HBM into LDS, bypassing VGPR. This is the **double-buffer trick** for matrix kernels and the AMD analog of NVIDIA's `cp.async`. CDNA4 introduces wider per-lane variants than CDNA3 (check `clang/include/clang/Basic/BuiltinsAMDGPU.def` or the ISA reference for the exact width set on your target).
 
 ```cpp
 // Pseudo: prefetch one tile of A while MFMA on the previous tile
@@ -265,7 +262,7 @@ In practice you express this via:
   L2 / TCC   (per-XCD, ~4 MB, 30-50 cycles)
        │
        ▼
-  Infinity Cache / MALL  (CDNA3 only: 256 MB, ~80 cycles)
+  Infinity Cache / MALL  (256 MB on both gfx942 and gfx950, ~80 cycles)
        │
        ▼
   HBM3 / HBM3E (192-288 GB, 200-300 cycles, 5.3-8.0 TB/s)
@@ -288,7 +285,7 @@ Fix uncoalesced reads by **transposing to LDS first**: each lane reads its own c
 
 - **vL1 (TCP)**: per-CU. Tracks read-only data and is often *cold* — kernels rarely re-hit. Don't rely on it.
 - **L2 (TCC)**: per-XCD, ~4 MB. Acts as the main reuse buffer between waves on the same XCD.
-- **Infinity Cache (MALL, CDNA3 only)**: 256 MB shared. Catches cross-XCD reuse. **Removed on CDNA4** — kernels that relied on it should be retuned to stay in L2 or fit entirely in HBM bandwidth.
+- **Infinity Cache (MALL)**: 256 MB shared on both gfx942 and gfx950. Catches cross-XCD reuse. On CDNA4 it sits in front of HBM3E (8 TB/s) instead of HBM3, so the penalty for missing it is smaller but the working-set sweet spot is similar.
 
 ### Per-channel HBM balance
 
@@ -298,18 +295,24 @@ On MI300X, `TCC_EA0_*` and `TCC_EA1_*` should each see roughly half the traffic.
 
 ## Stalls — what the SQ_WAIT_* counters mean
 
-When a wave can't issue an instruction, the SQ counter for the reason it's waiting increments. These map to source-line via PC sampling / ATT:
+When a wave can't issue an instruction, the SQ counter for the reason it's waiting increments. These map to source-line via PC sampling / ATT. The counters that have been observed on gfx942 / gfx950 with recent ROCm are:
 
 | Counter | Wait reason | Most common cause |
 |---|---|---|
 | `SQ_WAIT_INST_VMEM` | vmem op in flight | Outstanding global load — increase ILP, prefetch with `global_load_lds`, fuse loads |
-| `SQ_WAIT_INST_LDS` | LDS op in flight | LDS read latency — overlap with compute |
-| `SQ_WAIT_ANY_LDS` | any LDS-related stall | Bank conflicts, or LDS pressure |
+| `SQ_WAIT_INST_LDS` | LDS op in flight (covers bank-conflict serialization) | LDS read latency, bank conflicts, or LDS pressure |
+| `SQ_WAIT_INST_SMEM` | scalar-memory op in flight | Constant cache / kernarg latency |
+| `SQ_WAIT_INST_FLAT` | flat-addressing op in flight | Generic-addressing memory access |
+| `SQ_WAIT_INST_EXP` | export in flight | Mostly graphics; rare in compute |
+| `SQ_WAIT_INST_MISC` | misc fixed-latency wait | — |
 | `SQ_WAIT_BARRIER` | at `s_barrier` | Workgroup-wide sync — usually fundamental, but check if you can split barrier into halves |
-| `SQ_WAIT_INST_VSCRATCH` | scratch op in flight | **Register spill** — fix VGPR/AGPR pressure |
-| `SQ_WAIT_INST_SCA` | scalar ALU op | Rare; usually a `s_*` op blocking |
 | `SQ_WAIT_VMCNT` | vmcnt > 0 | Drain outstanding vmem before continuing — usually from explicit `s_waitcnt vmcnt(0)` or mem ordering |
 | `SQ_WAIT_LGKMCNT` | lgkmcnt > 0 | Drain LDS/GDS/scalar/const before continuing |
+
+Scratch (= register spill) traffic does **not** have a stable dedicated `SQ_WAIT_*` counter on
+gfx942/gfx950 — diagnose it via `Scratch_Per_Workitem > 0` in launch info and
+rocprof-compute section 2.1.22. Always verify the exact set on your install with
+`rocprofv3 -L | grep SQ_WAIT`.
 
 `SQ_WAIT_INST_VMEM > 30%` is usually the #1 bottleneck in a non-trivial kernel. Treatments, in order:
 
@@ -403,7 +406,7 @@ These are the patterns that consistently produce well-performing CDNA kernels �
 
 ### 4. Use `global_load_lds` for prefetch
 - Direct HBM→LDS bypasses VGPR pressure.
-- CDNA4 widened to 128 b/lane — double-buffering throughput is ~4× CDNA3 for matrix kernels.
+- CDNA4 has wider per-lane variants than CDNA3 — check the AMDGPU intrinsics / ISA reference for the exact widths your toolchain emits, and prefer the widest variant your data layout allows.
 
 ### 5. Use MFMA via CK / hipBLASLt / rocWMMA
 - Hand-written MFMA is hard. The wrappers pick the right tile shape and emit correct AGPR moves.
@@ -498,8 +501,10 @@ HIP_LAUNCH_BLOCKING=1 ./harness ...
 # Force a specific GPU (multi-GPU node)
 HIP_VISIBLE_DEVICES=0 ./harness ...
 
-# Force a specific gfx (for fat binaries)
-HIP_PLATFORM=amd HSA_OVERRIDE_GFX_VERSION=9.4.2 ./harness ...   # gfx942
+# Force a specific gfx (intended for consumer cards lacking the target's gfx in their
+# device-info table; on Instinct hardware you should NOT need it, and using a mismatched
+# value can mask real device-mismatch bugs and crash kernels mid-run)
+# HSA_OVERRIDE_GFX_VERSION=9.4.2 ./harness ...   # gfx942 — only for unusual ports
 
 # Dump the LLVM IR / assembly during build
 hipcc -save-temps=obj ... 2>&1 | grep -E '\.s$|\.ll$'
@@ -513,7 +518,7 @@ llvm-objdump --disassemble --arch=gfx942 harness | grep -i mfma
 These are the authoritative AMD references — keep them open while tuning:
 
 1. **AMD CDNA3 white paper** ("AMD Instinct MI300X Architecture") — chip layout, peak rates, MFMA tables.
-2. **AMD CDNA4 white paper** ("AMD Instinct MI355X Architecture") — CDNA4 deltas including FP4/FP6/MXFP, 2:4 sparsity, LDS expansion, Infinity Cache removal.
+2. **AMD CDNA4 white paper** ("AMD Instinct MI355X Architecture") — CDNA4 deltas including FP4/FP6/MXFP, 2:4 sparsity, HBM3E, and Infinity Cache coupling.
 3. **ROCm Documentation Portal** (rocm.docs.amd.com) — current ROCm release notes, rocprofv3 / rocprof-compute / hipBLASLt user guides.
 4. **HIP API Reference** + **HIPIFY** translation guide.
 5. **AMD GPU ISA Reference** ("AMD Instinct MI300 Instruction Set Architecture") — full VALU/SALU/MFMA/VMEM ISA. Required reading if you write inline asm.

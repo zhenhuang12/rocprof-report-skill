@@ -1,13 +1,13 @@
 ---
 name: rocprof-report-skill
-description: Profile HIP / ROCm kernels with rocprofv3 and rocprof-compute on AMD Instinct MI300X (gfx942 / CDNA3) and MI355X (gfx950 / CDNA4). Use when the user asks to profile a kernel, analyze its performance, diagnose bottlenecks, read a rocprof / Omniperf / rocprof-compute report, or write an optimization plan — including variants in Chinese ("profile 一下", "为什么慢", "rocprof 报告").
+description: Use when the user asks to profile a HIP / ROCm kernel on AMD Instinct MI300X (gfx942 / CDNA3) or MI355X (gfx950 / CDNA4), analyze its performance, diagnose a bottleneck, read a rocprofv3 / rocprof-compute / Omniperf report, or write an optimization plan from rocprof evidence — including Chinese phrasings ("profile 一下", "为什么慢", "rocprof 报告说...", "Omniperf 看一下").
 ---
 
 # Skill: HIP Kernel Profiling (MI300X / MI355X, rocprofv3 + rocprof-compute)
 
 **When to use:** user asks to profile a HIP kernel, analyze its performance, find its bottlenecks, or write an optimization plan based on rocprofv3 / rocprof-compute (formerly Omniperf) data. Triggers include: "profile X", "为什么这个 kernel 慢", "rocprof / Omniperf 报告说...", "下一步怎么优化", "帮我看一下这份 rocprof 报告".
 
-**Target hardware (this repo):** AMD Instinct **MI300X** (gfx942, CDNA3, 304 CUs across 8 XCDs, 192 GB HBM3 @ 5.3 TB/s, 256 MB Infinity Cache) and **MI355X** (gfx950, CDNA4, 256 CUs across 2 IODs, 288 GB HBM3E @ 8.0 TB/s, FP4/FP6/MXFP support). Most advice below is generic; gfx942- and gfx950-specific notes are explicitly marked.
+**Target hardware (this repo):** AMD Instinct **MI300X** (gfx942, CDNA3, 304 CUs across 8 XCDs over 4 IODs, 192 GB HBM3 @ 5.3 TB/s, 256 MB Infinity Cache, 32 KB vL1/CU) and **MI355X** (gfx950, CDNA4, 256 CUs = 8 XCDs × 32 CUs over 2 IODs, 288 GB HBM3E @ 8.0 TB/s, 256 MB Infinity Cache retained, FP4/FP6/MXFP support). Most advice below is generic; gfx942- and gfx950-specific notes are explicitly marked.
 
 ---
 
@@ -27,7 +27,7 @@ Most under-performing HIP kernels are under-performing for exactly one reason th
 
 2. **Build a standalone harness** unless the user is profiling through their existing binary. Harnesses compile in seconds, run the kernel in isolation, and let you use `-gline-tables-only` cleanly so ATT / PC-sampling can map ISA back to source. Compile into `profile/<run_name>/harness/`. See [`reference/02-harness-guide.md`](reference/02-harness-guide.md) and the template in [`helpers/harness_template.hip`](helpers/harness_template.hip).
 
-3. **Run three profiles**: (a) `rocprofv3 --sys-trace` (or `--hip-trace --hsa-trace --kernel-trace`) for the overview timeline, (b) `rocprof-compute profile --roofline --kernel-name <regex>` for the section-based perf metrics (the AMD analog of `--set full`), and (c) `rocprofv3 --att` (ATT / SQTT) plus `--pc-sampling-method host-trap` (or `stochastic` on MI300X+) for per-line stall attribution (the AMD analog of `--set source --section SourceCounters`). Write outputs to `profile/<run_name>/reports/`. See [`reference/03-collection.md`](reference/03-collection.md).
+3. **Run three profiles**: (a) `rocprofv3 --sys-trace` (or `--hip-trace --hsa-trace --kernel-trace`) for the overview timeline, (b) `rocprof-compute profile --roofline --kernel-name <regex>` for the section-based perf metrics (the AMD analog of `ncu --set full`), and (c) `rocprofv3 --att` (ATT / SQTT) plus `rocprofv3 --pc-sampling-beta-enabled --pc-sampling-method host_trap` (or `stochastic` on MI300X+) for per-line stall attribution (the AMD analog of `ncu --set source --section SourceCounters`). Write outputs to `profile/<run_name>/reports/`. See [`reference/03-collection.md`](reference/03-collection.md).
 
 4. **Parse with Python** — `pandas` for the CSVs, `sqlite3` for `.rpd` / `.db` files, and `rocpd` / `rocprof-analyze` for cross-section queries — not by eye-balling the CLI. Write analysis outputs to `profile/<run_name>/analysis/`. Use the helpers in [`helpers/`](helpers/). See [`reference/04-python-api.md`](reference/04-python-api.md).
 
@@ -72,7 +72,7 @@ Most under-performing HIP kernels are under-performing for exactly one reason th
 
 ## Critical lessons (don't skip)
 
-1. **Don't transplant NVIDIA-style metric names.** AMD has its own counter taxonomy: `SQ_*` (shader / wave), `TCP_*` (vL1 cache), `TCC_EA0_*` (L2 on MI300+ — note the `_EA0` / `_EA1` channel suffix, NOT `TCC_EA_*`), `GRBM_*` (graphics / global). Many third-party blog posts cite gfx906 (MI50) or gfx908 (MI100) names that no longer exist on gfx942 / gfx950. Use the lists in [`reference/08-mi300x-mi355x-counter-names.md`](reference/08-mi300x-mi355x-counter-names.md) or enumerate via `rocprofv3 --list-metrics`.
+1. **Don't transplant NVIDIA-style metric names.** AMD has its own counter taxonomy: `SQ_*` (shader / wave), `TCP_*` (vL1 cache), `TCC_EA0_*` (L2 on MI300+ — note the `_EA0` / `_EA1` channel suffix, NOT `TCC_EA_*`), `GRBM_*` (graphics / global). Many third-party blog posts cite gfx906 (MI50) or gfx908 (MI100) names that no longer exist on gfx942 / gfx950. Use the lists in [`reference/08-mi300x-mi355x-counter-names.md`](reference/08-mi300x-mi355x-counter-names.md) or enumerate via `rocprofv3 -L` (`--list-avail`).
 
 2. **Always compile with `-gline-tables-only` (or `-g`).** Without it, the `Source` column in ATT output and the `Instruction_Comment` column in PC-sampling output are blank — and you cannot do per-line stall analysis. If you can't add `-gline-tables-only` to the build system (PyTorch's `torch.utils.cpp_extension`, Triton, hipBLASLt JIT), **build a standalone harness** — that's the whole point.
 
@@ -82,7 +82,7 @@ Most under-performing HIP kernels are under-performing for exactly one reason th
 
 5. **rocprof-compute's "Speed-of-Light" panel already does half the work.** Each section (2.1.x ID) summarizes the gap between achieved and peak and ranks which subsystem is the bottleneck. Read it first — it often points straight at the answer.
 
-6. **Don't delegate understanding.** Run the profiles yourself, open the reports, cite specific counter values. Never write "the profile shows it's memory-bound" — instead, name the two or three counter values that back your conclusion (e.g., "`TCC_EA0_RDREQ_sum` per kernel sits at X (only Y% of peak HBM BW), and `SQ_WAIT_INST_LDS / SQ_INSTS_VALU` exceeds 30%, so the kernel is **LDS-bank-conflict-bound on the shared-memory phase**, not HBM-BW-bound"). Fill in the actual numbers from your report. Specificity is the deliverable.
+6. **Don't delegate understanding.** Run the profiles yourself, open the reports, cite specific counter values. Never write "the profile shows it's memory-bound" — instead, name the two or three counter values that back your conclusion (e.g., "`TCC_EA0_RDREQ_sum` per kernel sits at X (only Y% of peak HBM BW), and `SQ_WAIT_INST_LDS / SQ_INSTS_VALU` exceeds 30%, so the kernel is **LDS-bank-conflict-bound on the shared-memory phase**, not HBM-BW-bound"). Fill in the actual numbers from your report — verify each counter name with `rocprofv3 -L | grep` if you're unsure. Specificity is the deliverable.
 
 ---
 

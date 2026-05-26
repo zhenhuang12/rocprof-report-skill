@@ -12,7 +12,7 @@ A Claude Code skill for profiling HIP / ROCm kernels with `rocprofv3` and `rocpr
 
 The skill is self-contained: reference docs, reusable helper scripts (HIP harness template, safetensors loader, report-analysis Python), and a companion CDNA3 / CDNA4 programming reference all ship in this repo.
 
-> **Heritage:** this skill is a 1:1 port of the NVIDIA Nsight Compute version that targeted B200 / sm_100. The directory layout, six-dimension structure, and report template were proven on NVIDIA kernels and have been re-grounded against the AMD ROCm 7.x profiling stack here.
+> **Heritage:** the directory layout, six-dimension structure, and report template were proven on an earlier NVIDIA Nsight Compute version of this skill and have been re-grounded against the AMD ROCm 7.x profiling stack here.
 
 ---
 
@@ -109,25 +109,37 @@ The Python helpers work standalone on any rocprof / rocprof-compute output you h
 ```bash
 # Create a run directory
 export RUN=/path/to/your/profile/myrun
+export SKILL=~/.claude/skills/rocprof-report-skill
 
 # Extract key metrics from a rocprof-compute "profile" output directory
-python3 ~/.claude/skills/rocprof-report-skill/helpers/analyze_reports.py \
+python3 "$SKILL/helpers/analyze_reports.py" \
     --run-dir "$RUN" \
-    --report "$RUN/reports/rpc_<tag>" --tag <tag>
+    --rpc "$RUN/reports/rpc_<tag>" --tag <tag>
 
-# Per-line stall hotspots from ATT JSON / PC-sampling CSV
-python3 ~/.claude/skills/rocprof-report-skill/helpers/extract_stall_hotspots.py \
+# Per-line stall hotspots from PC-sampling CSV …
+python3 "$SKILL/helpers/extract_stall_hotspots.py" \
     --run-dir "$RUN" \
-    --report "$RUN/reports/att_<tag>" --tag <tag>
+    --pcsamp "$RUN/reports/pcsamp_<tag>/pc_sampling_host_trap_v0.csv" --tag <tag>
 
-# ASCII PMC-timeseries timelines
-python3 ~/.claude/skills/rocprof-report-skill/helpers/plot_timeline.py \
+# … or from ATT JSON traces
+python3 "$SKILL/helpers/extract_stall_hotspots.py" \
     --run-dir "$RUN" \
-    --report "$RUN/reports/rpc_<tag>" --tag <tag>
+    --att-dir "$RUN/reports/att_<tag>" --tag <tag>
+
+# ASCII timelines: per-CU distribution from a rocprof-compute output dir
+python3 "$SKILL/helpers/plot_timeline.py" \
+    --run-dir "$RUN" \
+    --rpc "$RUN/reports/rpc_<tag>" --tag <tag> --per-cu
+
+# … or from a rocprof-compute timeseries CSV (collect with
+# `rocprof-compute profile --timeseries-sampling-rate 1ms ...`)
+python3 "$SKILL/helpers/plot_timeline.py" \
+    --run-dir "$RUN" \
+    --timeseries "$RUN/reports/rpc_ts_<tag>/pmc_perf_timeseries.csv" --tag <tag>
 
 # Browse a flashinfer-trace dataset to pick workload shapes
 export FIB_DATASET_PATH=/path/to/flashinfer-trace
-python3 ~/.claude/skills/rocprof-report-skill/helpers/list_flashinfer_workloads.py \
+python3 "$SKILL/helpers/list_flashinfer_workloads.py" \
     --definition <your_definition_name>
 ```
 

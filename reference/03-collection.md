@@ -99,7 +99,8 @@ Two options. Prefer PC sampling (lower overhead) when available; fall back to AT
 ### 3a) PC sampling
 
 ```bash
-rocprofv3 --pc-sampling-method host-trap \
+rocprofv3 --pc-sampling-beta-enabled \
+    --pc-sampling-method host_trap \
     --pc-sampling-interval 1000 \
     --pc-sampling-unit cycles \
     --kernel-include-regex "KERNEL_REGEX" \
@@ -109,9 +110,10 @@ rocprofv3 --pc-sampling-method host-trap \
 
 | Flag | Meaning |
 |---|---|
-| `--pc-sampling-method` | `host-trap` (works on MI200+) is the most portable; `stochastic` is lower-overhead on MI300+ if your ROCm build enables it. |
-| `--pc-sampling-interval` | Sample every N cycles (or instructions, depending on `--pc-sampling-unit`). |
-| `--pc-sampling-unit` | `cycles` or `instructions`. |
+| `--pc-sampling-beta-enabled` | **Required in ROCm 6.4+** — PC sampling is still a beta feature; sets `ROCPROFILER_PC_SAMPLING_BETA_ENABLED=1` internally. |
+| `--pc-sampling-method` | `host_trap` (works on MI200+) is the most portable; `stochastic` is lower-overhead on MI300+ if your ROCm build enables it. **Note the underscore — not `host-trap`.** |
+| `--pc-sampling-interval` | Sample every N units (cycles / instructions / time, per `--pc-sampling-unit`). |
+| `--pc-sampling-unit` | `time` (default for host_trap), `cycles` or `instructions` (stochastic). |
 | `--kernel-include-regex` | Limits sampling to matching kernels. |
 
 Output: per-kernel CSV with `Instruction_Address`, `Source` (file:line, populated only when compiled with `-gline-tables-only`/`-g`), `Instruction_Comment` (the SASS-equivalent text on AMD: the ISA mnemonic), `Wait_Reason`, `Sample_Count`.
@@ -154,14 +156,14 @@ rocprofv3 --pmc SQ_WAVES,SQ_INSTS_VALU,SQ_INSTS_MFMA,SQ_WAIT_INST_VMEM,TCP_TCC_R
     -d $PROFILE_RUN_DIR/reports/pmc_<tag> \
     -- ./harness [args]
 
-# Or a YAML/JSON job file (preferred for reproducibility)
+# Or a YAML/JSON job file (preferred for reproducibility). Each `jobs` entry
+# mirrors a single rocprofv3 CLI invocation; there is no `name:` field at the
+# job level (use the file name or comments to label).
 cat > /tmp/pmc.yaml <<'EOF'
 jobs:
-  - name: my_targeted
-    pmc:
+  - pmc:
       - SQ_WAVES
       - SQ_INSTS_VALU
-      - SQ_INSTS_MFMA
       - SQ_WAIT_INST_VMEM
       - SQ_WAIT_INST_LDS
       - SQ_LDS_BANK_CONFLICT
@@ -174,9 +176,9 @@ EOF
 rocprofv3 -i /tmp/pmc.yaml -d $PROFILE_RUN_DIR/reports/pmc_<tag> -- ./harness [args]
 ```
 
-rocprofv3 automatically splits the PMC list into groups that fit the hardware counter budget and replays the binary once per group. Counters that share a unit (SQ_*, TCP_*, TCC_*) often share a group; rocprofv3 reports the grouping in its log.
+A single `pmc:` list must fit in one hardware pass — rocprofv3 will **fail** the job if the counters don't fit, it does not auto-split. To collect more than one pass' worth, add multiple `- pmc: ...` entries under `jobs:` (one entry = one extra pass), or use `pmc_groups:` for explicit grouping. Counters that share a unit (SQ_*, TCP_*, TCC_*) often fit in one group; check `rocprofv3 -L` output for the conflict list.
 
-The full list of available counters: `rocprofv3 --list-metrics` (or `--list-counters` on some builds).
+The full list of available counters: `rocprofv3 -L` (long form `--list-avail`). On newer ROCm builds, `rocprofv3-avail list --pmc` is the dedicated companion. The legacy `--list-counters` / `--list-metrics` flags are from rocprof v1/v2 and are not part of rocprofv3.
 
 ---
 
@@ -227,7 +229,7 @@ Section ID map (MI300X, rocprof-compute ROCm 7.x — may shift slightly between 
 | 2.1.5  | Pipeline / instruction mix    | VALU vs MFMA vs VMEM vs LDS instruction counts |
 | 2.1.10 | Compute Units — Compute Pipe  | VALU / SALU / Matrix-core busy %, IPC, FMA |
 | 2.1.11 | Compute Units — Memory Pipe   | Bytes per wavefront, LDS bank conflicts |
-| 2.1.13 | Wavefront Stall Reasons       | `WAIT_INST_VMEM`, `WAIT_INST_LDS`, `WAIT_ANY_LDS`, `WAIT_BARRIER`, `WAIT_INST_SCA` |
+| 2.1.13 | Wavefront Stall Reasons       | `WAIT_INST_VMEM`, `WAIT_INST_LDS`, `WAIT_INST_FLAT`, `WAIT_BARRIER`, plus the PC-sampling Wait_Reason enums |
 | 2.1.15 | Memory — vL1 cache (TCP)      | Hit rate, sectors per request, coalescing |
 | 2.1.16 | Memory — L2 cache (TCC)       | Per-channel hit rate, atomics, bytes |
 | 2.1.17 | Memory — HBM (TCC_EA)         | Per-channel HBM read/write bytes, achieved BW |
@@ -280,6 +282,6 @@ For MI300X / MI355X the GPU normally reaches steady-state during rocprof-compute
 - **`--kernel-include-regex` matches nothing**: check with `llvm-objdump --syms --demangle <code-object>` and make sure you're matching the demangled name. Templates produce names like `my_kernel<8, 256>(...)`.
 - **Output dir is empty / 0 KB**: profile terminated before the kernel launched. Usually means the regex didn't match, or the harness crashed.
 - **ATT JSON is empty or "Source" column blank**: rebuild with `-gline-tables-only` (or `-g`), and confirm symbols weren't stripped at link time.
-- **PC sampling silently no-ops**: not all GPU/driver/ROCm combinations expose PC sampling. Try `--pc-sampling-method host-trap` first (most portable) before `stochastic`.
+- **PC sampling silently no-ops**: not all GPU/driver/ROCm combinations expose PC sampling. Make sure you passed `--pc-sampling-beta-enabled`, and try `--pc-sampling-method host_trap` first (most portable) before `stochastic`.
 - **`rocprofv3` replays the *application*, not just the kernel**: any expensive host-side init (data loading, NCCL init, hipBLASLt warmup) is paid on every replay. Move it outside the profile window — or just shrink the harness, which is the whole point.
-- **MI355X support requires ROCm 7+**. ROCm 6.x will refuse `--offload-arch=gfx950` and may also refuse to enumerate gfx950 counters in `--list-metrics`.
+- **MI355X support requires ROCm 7+**. ROCm 6.x will refuse `--offload-arch=gfx950` and may also refuse to enumerate gfx950 counters in `rocprofv3 -L` output.

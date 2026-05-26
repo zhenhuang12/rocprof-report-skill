@@ -123,59 +123,65 @@ Ratios > 5x indicate significant potential for tail effect.
 **What:** when waves aren't issuing, what are they waiting for? Which source lines generate the most stalls?
 
 **Aggregate wait counters (rocprof-compute section 2.1.13):**
+
+> **Verify counter names on your ROCm install** with `rocprofv3 -L | grep SQ_WAIT`. The list below
+> reflects gfx942 / gfx950 names that have been observed; non-listed `SQ_WAIT_*` variants
+> (e.g. INST_VALU, INST_SCA, ANY_LDS, ANY, VSCRATCH) are *not* guaranteed to exist and may
+> have been derived metrics in older ROCm releases. Use the rocprof-compute section 2.1.13
+> derived totals instead of inventing counter names.
+
 ```
 # "stall cycles" — number of cycles a wave was waiting on the named resource
 SQ_WAIT_INST_VMEM                     # waiting on vector memory (global load/store, L1)
 SQ_WAIT_INST_LDS                      # waiting on LDS instruction issue
-SQ_WAIT_ANY_LDS                       # waiting on any LDS dependency (bank conflicts surface here)
-SQ_WAIT_INST_SCA                      # waiting on scalar memory
+SQ_WAIT_INST_SMEM                     # waiting on scalar memory
 SQ_WAIT_INST_FLAT                     # waiting on FLAT (generic) memory
 SQ_WAIT_INST_EXP                      # waiting on export (mostly pixel/vertex, rare in compute)
+SQ_WAIT_INST_MISC                     # other instruction-side waits
 SQ_WAIT_BARRIER                       # waiting at s_barrier
-SQ_WAIT_INST_VALU                     # waiting on VALU pipe occupancy
-SQ_WAIT_INST_VSCRATCH                 # waiting on scratch (= spill traffic) — bad sign
 SQ_WAIT_VMCNT, SQ_WAIT_LGKMCNT        # waiting on the s_waitcnt counters
-SQ_WAIT_ANY                           # any wait
 
 # Issue / activity
 SQ_INSTS_VALU
 SQ_INSTS_MFMA
 SQ_INSTS_VMEM_RD, SQ_INSTS_VMEM_WR
 SQ_INSTS_LDS
-SQ_BUSY_CYCLES, SQ_ACTIVE_INST_VALU
+SQ_BUSY_CYCLES
 ```
 
-**Per-PC wait metrics (from `rocprofv3 --pc-sampling-method host-trap` or ATT):**
+**Per-PC wait metrics (from `rocprofv3 --pc-sampling-beta-enabled --pc-sampling-method host_trap` or ATT):**
 
 PC sampling output is a CSV with one row per sample. Aggregate by `Wait_Reason` (an enum string) and by `Source` (file:line) — see [`04-python-api.md`](04-python-api.md) example.
 
 ```
-Wait_Reason possible values (rocprofv3 PC sampling):
+Wait_Reason possible values (rocprofv3 PC sampling — verify with `rocprofv3 -L`):
 WAIT_INST_VMEM        # waiting on vector memory access
 WAIT_INST_LDS         # waiting on LDS instruction
-WAIT_ANY_LDS          # waiting on LDS dependency (bank conflicts)
-WAIT_INST_SCA         # waiting on scalar memory
+WAIT_INST_SMEM        # waiting on scalar memory
+WAIT_INST_FLAT        # waiting on FLAT memory
 WAIT_BARRIER          # waiting at barrier
 WAIT_VMCNT, WAIT_LGKMCNT
 ISSUED                # productively issuing — the "good" reason
 NOT_SELECTED          # eligible but scheduler picked another wave — good sign (plenty of parallelism)
-NO_INST               # warp prologue / drain — usually minor
+NO_INST               # wave prologue / drain — usually minor
 OTHER
 ```
+
+Wait-reason enum names vary between ROCm versions; the canonical list for your install is in
+`rocprofv3 -L` output and in the rocprof-compute section-2.1.13 column headers. Treat any
+name above as a label to match against your actual data, not as a hard guarantee.
 
 **Stall reasons you need to know (approximate NVIDIA analogs in parens):**
 
 | Reason | Meaning | Typical cause | Fix direction | NVIDIA analog |
 |---|---|---|---|---|
 | `WAIT_INST_VMEM` / `SQ_WAIT_INST_VMEM` | waiting on global / vL1 memory | uncoalesced load, latency-bound | coalesce, reuse, add ILP, use `global_load_lds` | `long_scoreboard` |
-| `WAIT_ANY_LDS` / `SQ_WAIT_ANY_LDS` | waiting on LDS dependency | LDS bank conflict, long LDS dep chain | pad LDS, swizzle, more ILP | `short_scoreboard` |
-| `WAIT_INST_LDS` / `SQ_WAIT_INST_LDS` | LDS instruction issue stall | too many LDS ops in flight | vectorize (`ds_read_b128`), shorten phases | `short_scoreboard` / `mio_throttle` |
+| `WAIT_INST_LDS` / `SQ_WAIT_INST_LDS` | LDS instruction issue stall (covers bank-conflict serialization on most ROCm versions) | LDS bank conflict, too many LDS ops in flight, long LDS dep chain | pad LDS, swizzle, vectorize (`ds_read_b128`) | `short_scoreboard` / `mio_throttle` |
 | `WAIT_BARRIER` / `SQ_WAIT_BARRIER` | waiting at `s_barrier` | other waves haven't arrived | reduce barriers, fix divergence | `barrier` |
-| `WAIT_INST_SCA` / `SQ_WAIT_INST_SCA` | waiting on scalar memory | scalar load latency (uniform args, constant cache) | bake to constants, prefetch | (no direct analog) |
+| `WAIT_INST_SMEM` / `SQ_WAIT_INST_SMEM` | waiting on scalar memory | scalar load latency (uniform args, constant cache) | bake to constants, prefetch | (no direct analog) |
+| `WAIT_INST_FLAT` / `SQ_WAIT_INST_FLAT` | waiting on FLAT (generic) memory | generic-addressing global/LDS access | use typed global/LDS when possible | `long_scoreboard` |
 | `WAIT_VMCNT` | explicit `s_waitcnt vmcnt(N)` | inserted by compiler to enforce vmem ordering | unroll, more ILP between waitcnts | partly `long_scoreboard` |
 | `WAIT_LGKMCNT` | explicit `s_waitcnt lgkmcnt(N)` | LDS/GDS/Kernarg ordering | reduce LDS dep chains | (no direct analog) |
-| `WAIT_INST_VALU` | VALU pipe saturated | legit compute-bound | you're doing well, find other wins | `math_pipe_throttle` |
-| `WAIT_INST_VSCRATCH` | scratch (register spill) traffic | spilling — VGPR/AGPR over-committed | `__launch_bounds__`, split kernel | `local_ld`/`local_st` + `long_scoreboard` |
 | `NOT_SELECTED` | eligible but scheduler picked another | **good sign** — plenty of parallelism | ignore | `not_selected` |
 | `ISSUED` | actually issuing this cycle | **productive** | ignore | `selected` |
 | `NO_INST` | wave has nothing to issue | kernel prologue/epilogue | usually minor | `no_instruction` |
@@ -185,7 +191,7 @@ OTHER
 **Reading the PC-sampling percentages:** sum `Sample_Count` over all rows = total samples. Per-Wait_Reason fraction = "% of samples stalled on X". Rules of thumb:
 
 - **`WAIT_INST_VMEM` > 40% of samples**: kernel is memory-latency-bound. Check Dimension 6 (access patterns) next.
-- **`WAIT_ANY_LDS` > 30%**: LDS bank conflicts or long dep chains; check `SQ_LDS_BANK_CONFLICT`.
+- **`WAIT_INST_LDS` > 30%**: LDS bank conflicts or long dep chains; check `SQ_LDS_BANK_CONFLICT`.
 - **`WAIT_BARRIER` > 20%**: too much synchronization, or wave divergence before a barrier.
 - **`ISSUED` < 10%**: very little actual issue — the whole kernel is stall-bound.
 
@@ -198,17 +204,23 @@ OTHER
 **What:** is the kernel using Matrix Cores at all? If yes, how well?
 
 **Counters (rocprof-compute section 2.1.10):**
+
+> MFMA per-dtype counters are named `SQ_INSTS_VALU_MFMA_MOPS_<DTYPE>` on gfx942 / gfx950
+> ("MOPS" = matrix-ops). The exact set of `<DTYPE>` suffixes (F16, BF16, F32, F64, I8, F8,
+> MXFP4/MXFP6 etc.) varies by ROCm version — list what your install exposes with
+> `rocprofv3 -L | grep MFMA`. The aggregate `SQ_INSTS_MFMA` is always available.
+
 ```
 SQ_INSTS_MFMA                          # total MFMA instruction count
 SQ_INSTS_VALU                          # total VALU instruction count
-SQ_INSTS_VALU_MFMA_F16                 # subtype counts (when collected)
-SQ_INSTS_VALU_MFMA_BF16                # CDNA3
-SQ_INSTS_VALU_MFMA_F32
-SQ_INSTS_VALU_MFMA_F64
-SQ_INSTS_VALU_MFMA_I8
-SQ_INSTS_VALU_MFMA_F8                  # CDNA3 (OCP-FNUZ) / CDNA4 (OCP standard FP8)
-SQ_INSTS_VALU_MFMA_MXFP                # CDNA4 (gfx950) only — block-scaled FP4/FP6
-SQ_BUSY_CYCLES, SQ_ACTIVE_INST_VALU
+SQ_INSTS_VALU_MFMA_MOPS_F16            # per-dtype MFMA MOPs (when exposed by ROCm)
+SQ_INSTS_VALU_MFMA_MOPS_BF16
+SQ_INSTS_VALU_MFMA_MOPS_F32
+SQ_INSTS_VALU_MFMA_MOPS_F64            # CDNA3 (gfx942)
+SQ_INSTS_VALU_MFMA_MOPS_I8
+SQ_INSTS_VALU_MFMA_MOPS_F8             # CDNA3 (OCP-FNUZ) / CDNA4 (OCP standard FP8)
+# Block-scaled MX formats (FP4/FP6) are CDNA4 (gfx950) only — name suffix is install-specific
+SQ_BUSY_CYCLES
 GRBM_GUI_ACTIVE                        # for normalizing to total time
 ```
 
@@ -243,10 +255,11 @@ GRBM_GUI_ACTIVE                        # for normalizing to total time
 
 **Counters (rocprof-compute timeseries mode):**
 ```
-GRBM_GUI_ACTIVE / GRBM_count_or_total      # global activity
+GRBM_GUI_ACTIVE                             # global active cycles (denominator for utilization)
+GRBM_COUNT                                  # total elapsed cycles since last reset
 SQ_BUSY_CYCLES                              # per-CU
 SQ_WAVES                                    # in-flight waves
-SQ_WAIT_INST_VMEM, SQ_WAIT_ANY_LDS          # over time
+SQ_WAIT_INST_VMEM, SQ_WAIT_INST_LDS         # over time
 TCC_EA0_RDREQ_sum, TCC_EA1_RDREQ_sum        # HBM read pressure over time
 ```
 
@@ -300,8 +313,10 @@ SQ_INSTS_LDS                                    # LDS instruction count
 SQ_LDS_IDX_ACTIVE                               # LDS bank index active
 
 # Scratch (= register spill on AMD; backed by global HBM via the scratch buffer)
-SQ_INSTS_VMEM_SCRATCH_RD, SQ_INSTS_VMEM_SCRATCH_WR   # spill traffic
-Scratch_Per_Workitem (from launch info)
+# The exact "scratch read/write" counter names vary by ROCm version — check
+# `rocprofv3 -L | grep -i scratch`. Reliable indicators that work everywhere:
+#   - `Scratch_Per_Workitem` > 0 from launch info means *some* spilling
+#   - the rocprof-compute SoL panel calls it out as "Scratch" / "Spill"
 
 # Global LD/ST
 SQ_INSTS_VMEM_RD, SQ_INSTS_VMEM_WR              # global instr count
@@ -316,7 +331,7 @@ SQ_INSTS_FLAT                                    # FLAT addressing path
 - **L2 hit rate < 50%**: L2 is being blown through (or the kernel is reading something it never reuses), reads fall to HBM.
 - **Bytes per wavefront (rocprof-compute reports this in section 2.1.11)**: ideal is 256 B (= one `global_load_dwordx4` per lane × 64 lanes × 4 B). Substantially less means under-vectorization; gather/scatter; or stride > 1 access.
 - **`SQ_LDS_BANK_CONFLICT > 0`**: bank conflicts. The 32-bank LDS serializes same-bank accesses. Pad tile dims or swizzle indices. **MI355X has 160 KB LDS/CU vs 64 KB on MI300X** — padding cost is less painful on CDNA4.
-- **`SQ_INSTS_VMEM_SCRATCH_RD / SQ_INSTS_VMEM_RD > 0.01`**: **register spill** — very bad, scratch is HBM-backed. Reduce VGPR/AGPR pressure with `__launch_bounds__` or kernel splitting.
+- **`Scratch_Per_Workitem > 0` (from launch info) or rocprof-compute SoL "Scratch" non-zero**: **register spill** — very bad, scratch is HBM-backed. Reduce VGPR/AGPR pressure with `__launch_bounds__` or kernel splitting.
 - **`SQ_INSTS_LDS == 0`**: kernel uses no LDS. Fine for element-wise kernels; often a missed optimization for data-reuse-heavy kernels.
 
 rocprof-compute's section 2.1.17 reports the HBM utilization in the same "Speed-of-Light" form NCU uses:
@@ -332,9 +347,9 @@ Bandwidth  X TB/s  ...     ...     Y%
 
 **MI355X-specific reading:**
 
-- **`global_load_lds` widened to 128-bit/lane on CDNA4** — a single instruction can now move 16 B per lane directly from HBM/L2 into LDS, bypassing VGPR. If you see `SQ_INSTS_VMEM_RD` high *and* `SQ_INSTS_VALU` low on the data-loading lines, you're probably already using it.
-- **No Infinity Cache** on MI355X (CDNA4 removed it in favor of higher L2 bandwidth + HBM3E speed). Working-set-size tricks that helped on MI300X may not transfer.
-- **FP4 / FP6 / MXFP** reduce HBM BW pressure on the same workload by 2-4× relative to FP8/FP16. Look for `SQ_INSTS_VALU_MFMA_MXFP` if the kernel was written to exploit this.
+- **`global_load_lds` widened on CDNA4** — direct HBM/L2→LDS path bypassing VGPR has wider per-lane variants on gfx950 than on gfx942. Check ISA / LLVM intrinsics for the exact widths your toolchain emits. If you see `SQ_INSTS_VMEM_RD` high *and* `SQ_INSTS_VALU` low on the data-loading lines, you're probably already using it.
+- **Infinity Cache (256 MB)** is retained on MI355X but coupled to HBM3E (8.0 TB/s) instead of HBM3 — the working-set sweet spot is similar in size to MI300X but the HBM penalty for missing it is smaller.
+- **FP4 / FP6 / MXFP** reduce HBM BW pressure on the same workload by 2-4× relative to FP8/FP16. The per-dtype `SQ_INSTS_VALU_MFMA_MOPS_*` counter for block-scaled MX formats is install-specific — `rocprofv3 -L | grep -i mfma` shows what your build exposes.
 
 NCU's rule engine often reports the coalescing issue directly; rocprof-compute analogs are in section 2.1.11 ("Memory Pipe — bytes per wavefront", "Access pattern utilization"):
 ```

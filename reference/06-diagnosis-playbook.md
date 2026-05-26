@@ -208,12 +208,12 @@ If `K < 16`: consider batching multiple iterations' results into a vectorized wr
 
 **Signals:**
 - `SQ_LDS_BANK_CONFLICT > 0` (and substantial vs `SQ_INSTS_LDS`).
-- `WAIT_ANY_LDS` / `WAIT_INST_LDS` waits concentrated on LDS load lines.
+- `WAIT_INST_LDS` waits concentrated on LDS load lines.
 - Access pattern has regular strides that align to bank boundaries.
 
-**Why:** LDS has 32 banks (CDNA3) / 32 banks (CDNA4 — wider per bank); same-bank accesses serialize.
+**Why:** LDS has 32 banks (4 B each on gfx9 — both CDNA3 and CDNA4 keep this layout; CDNA4 just raises the total LDS size per CU); same-bank accesses serialize.
 
-**First-line fix:** padding. `__shared__ float tile[64][33]` instead of `[64][32]` breaks regular bank alignment. MI355X has 160 KB LDS/CU so the padding tax is much lower.
+**First-line fix:** padding. `__shared__ float tile[64][33]` instead of `[64][32]` breaks regular bank alignment. If your LDS budget allows it, padding is a one-line win.
 
 **Deeper fixes:**
 - Swizzle: XOR-scramble indices so accesses spread across banks.
@@ -265,10 +265,12 @@ If `K < 16`: consider batching multiple iterations' results into a vectorized wr
 ## Pattern K — Register / AGPR spill (scratch traffic)
 
 **Signals:**
-- `SQ_INSTS_VMEM_SCRATCH_RD > 0` or `SQ_INSTS_VMEM_SCRATCH_WR > 0`.
 - `Scratch_Per_Workitem > 0` in launch info.
 - rocprof-compute section 2.1.22 reports non-zero scratch usage.
-- VGPR + AGPR allocations near hardware max (CDNA3: 256 VGPR + 256 AGPR per SIMD; CDNA4: similar).
+- VGPR + AGPR allocations near per-SIMD limits.
+- (Counter-side scratch read/write counters exist on most ROCm versions but their exact names
+  vary — `rocprofv3 -L | grep -i scratch` on your install if you want to track the cycles
+  directly.)
 
 **Why:** compiler couldn't fit all live variables in registers (VGPR + AGPR), spilled some to scratch (which is HBM-backed via the scratch buffer — extremely slow).
 
@@ -289,7 +291,9 @@ If `K < 16`: consider batching multiple iterations' results into a vectorized wr
 ## Pattern L — FP64 used unintentionally
 
 **Signals:**
-- `SQ_INSTS_VALU_FP64 > 0` in a kernel that "should" be FP32.
+- An FP64-specific VALU counter (e.g. `SQ_INSTS_VALU_FP64`, name varies by ROCm version —
+  check `rocprofv3 -L | grep FP64`) reports > 0 in a kernel that "should" be FP32.
+- ISA shows `v_*_f64` / `v_fma_f64` instructions on hot lines.
 - Worse on CDNA4: FP64 throughput halved relative to CDNA3 — same source code is now 2× slower if anything slipped to double.
 
 **Why:** C/C++ floating-point literals (`1.0`, `0.5`, `3.14`) default to `double`. A `float x = a + 1.0 * b;` promotes `a + 1.0*b` to double.

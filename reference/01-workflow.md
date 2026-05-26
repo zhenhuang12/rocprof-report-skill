@@ -112,8 +112,12 @@ rocprof-compute profile -n <run_name>_<tag> \
     -- "$PROFILE_RUN_DIR/harness/your_harness" [args]
 
 # (3) Per-source-line stall sampling (analog of ncu --set source)
-# Prefer PC sampling on MI300X+ when supported (lower overhead than ATT):
-rocprofv3 --pc-sampling-method host-trap --pc-sampling-interval 1000 \
+# Prefer PC sampling on MI300X+ when supported (lower overhead than ATT).
+# `--pc-sampling-beta-enabled` is REQUIRED in ROCm 6.4+ — the feature is still beta.
+# Note the underscore in `host_trap` (not `host-trap`).
+rocprofv3 --pc-sampling-beta-enabled \
+    --pc-sampling-method host_trap \
+    --pc-sampling-interval 1000 --pc-sampling-unit cycles \
     --kernel-include-regex "YOUR_KERNEL_NAME" \
     -d "$PROFILE_RUN_DIR/reports/pcsamp_<tag>" \
     -- "$PROFILE_RUN_DIR/harness/your_harness" [args]
@@ -130,7 +134,7 @@ Timing budget:
 - `rocprofv3 --kernel-trace`: ~1 pass, near-zero overhead.
 - `rocprof-compute profile --roofline`: 15-30 replay passes (each PMC group needs its own pass). For a 3 ms kernel ≈ 10-20 s wall time.
 - `rocprofv3 --att`: one extra pass; output can be very large (hundreds of MB per CU).
-- `rocprofv3 --pc-sampling-method host-trap`: low overhead; one pass.
+- `rocprofv3 --pc-sampling-beta-enabled --pc-sampling-method host_trap`: low overhead; one pass.
 
 ---
 
@@ -146,8 +150,8 @@ Minimum analysis artifacts to produce:
 | `metrics_all_<tag>.json` | `analyze_reports.py` | Full PMC dump, archive for later |
 | `compare_<a>_vs_<b>.txt` | `analyze_reports.py` | Side-by-side metric comparison between workloads / versions |
 | `stall_hotspots_<tag>.txt` | `extract_stall_hotspots.py` | Top source lines ranked by stall samples (from PC-sampling or ATT) |
-| `pmc_timeline_plots.txt` | `plot_timeline.py` | ASCII time-series plots — reveals tail effect visually |
-| `details_<tag>.txt` | `rocprof-compute analyze -p ... --list-stats` | rocprof-compute's built-in section reports (each with peak-comparison + bottleneck hints) |
+| `timeline_plots.txt` | `plot_timeline.py` | ASCII time-series plots — reveals tail effect visually |
+| `details_<tag>.txt` | `rocprof-compute analyze -p ...` | rocprof-compute's built-in section reports (each with peak-comparison + bottleneck hints). `--list-stats` only *lists* section IDs; omit it to get the full dump. |
 
 Save everything under `$PROFILE_RUN_DIR/analysis/`. The user will want to re-inspect these; if two runs mix artifacts, you've already failed.
 
@@ -159,8 +163,8 @@ Work through the six analysis dimensions — see [`05-analysis-dimensions.md`](0
 
 1. **CU occupancy & wave structure** — are enough workgroups launched to fill the chip (304 CUs across 8 XCDs on MI300X; 256 CUs across 2 IODs on MI355X)? Is occupancy register- / LDS- / workgroup-limited?
 2. **Workgroup balance (tail effect)** — do per-CU / per-XCD active cycles match? Does the PMC timeline show a clean drop or a gradual tail?
-3. **Instruction-level stall analysis** — what wait reason dominates (`SQ_WAIT_INST_VMEM`, `SQ_WAIT_INST_LDS`, `SQ_WAIT_ANY_LDS`, `SQ_WAIT_INST_SCA`, `SQ_WAIT_BARRIER`)? Which source line generates it?
-4. **Matrix-Core utilization** — if this is a GEMM-ish kernel, are MFMA instructions actually being issued (`SQ_INSTS_MFMA` / `SQ_INSTS_VALU`)?
+3. **Instruction-level stall analysis** — what wait reason dominates (`SQ_WAIT_INST_VMEM`, `SQ_WAIT_INST_LDS`, `SQ_WAIT_BARRIER`, plus the PC-sampling `Wait_Reason` enums)? Which source line generates it?
+4. **Matrix-Core utilization** — if this is a GEMM-ish kernel, are MFMA instructions actually being issued (`SQ_INSTS_VALU_MFMA_MOPS_<dtype>` / `SQ_VALU_MFMA_BUSY_CYCLES`)?
 5. **CU utilization timeline** — flat high, flat low, periodic waves, gradual tail?
 6. **Memory access pattern** — bytes/wavefront, vL1/L2 hit rates, HBM throughput, LDS bank conflicts, register/scratch spill.
 

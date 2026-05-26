@@ -105,20 +105,47 @@ def aggregate_pcsamp(csv_path):
         wait_col = "__no_wait_reason__"
         df[wait_col] = "(unknown)"
     for src, wait, cnt in zip(df[src_col].astype(str), df[wait_col].astype(str), df[count_col]):
-        # Source is typically "file:line" — split if possible
-        if ":" in src:
-            fn, _, ln = src.rpartition(":")
-        else:
-            fn, ln = src, "?"
+        # Source is typically "file:line" or "file:line:col" — pull off the
+        # trailing numeric line (and optional column) so we don't mangle paths
+        # that contain colons (Windows drive letters, URLs).
+        fn, ln = _split_source(src)
+        if fn == "nan" or fn == "":
+            # PC samples with no source attribution would otherwise pile into
+            # a single fake "nan" hotspot.
+            continue
         try:
             c = int(cnt)
-        except Exception:
+        except (TypeError, ValueError):
             c = 0
         if c <= 0:
             continue
         per_line[(fn, ln)][wait] += c
         totals[wait] += c
     return per_line, totals
+
+
+_SRC_RE = None
+
+
+def _split_source(src):
+    """Split a "file[:line[:col]]" Source field into (file, line_str).
+
+    Returns ("?", "?") on empty / NaN, and (src, "?") if no trailing numeric
+    line component is present.
+    """
+    global _SRC_RE
+    if _SRC_RE is None:
+        import re
+        _SRC_RE = re.compile(r"^(.*?):(\d+)(?::\d+)?$")
+    if src is None:
+        return "?", "?"
+    s = src.strip()
+    if not s:
+        return "?", "?"
+    m = _SRC_RE.match(s)
+    if m:
+        return m.group(1), m.group(2)
+    return s, "?"
 
 
 def aggregate_att_json_dir(att_dir):
@@ -138,13 +165,14 @@ def aggregate_att_json_dir(att_dir):
                 wait = node.get("wait_reason") or node.get("Wait_Reason")
                 cnt = node.get("sample_count") or node.get("Sample_Count")
                 if src and cnt:
-                    if ":" in src:
-                        fn, _, ln = src.rpartition(":")
-                    else:
-                        fn, ln = src, "?"
+                    fn, ln = _split_source(str(src))
+                    if fn in ("?", "", "nan"):
+                        for v in node.values():
+                            walk(v)
+                        return
                     try:
                         c = int(cnt)
-                    except Exception:
+                    except (TypeError, ValueError):
                         c = 0
                     if c > 0:
                         w = wait or "(unknown)"
