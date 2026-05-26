@@ -156,12 +156,13 @@ ts = pd.concat(frames, ignore_index=True)
 For PC-sampling / ATT-style per-PC data (the AMD analog of NVIDIA's per-correlation-ID per-PC counts) you read **PC-sampling CSV** or **ATT JSON**:
 
 ```python
-# PC sampling — rocprofv3 writes the CSV FLAT under -d with a PID prefix:
-#   pcsamp_<tag>/<pid>_pc_sampling_stochastic.csv   (preferred: has Stall_Reason)
-#   pcsamp_<tag>/<pid>_pc_sampling_host_trap.csv    (PCs only, NO Stall_Reason column)
-# Glob accepts both the flat layout and the older nested form
-# (pcsamp_<tag>/pmc_1/<host>/<pid>_pc_sampling_*.csv) as a fallback so this
-# works regardless of how rocprofv3 was invoked.
+# PC sampling — rocprofv3's default `-d <dir>` writes
+#   pcsamp_<tag>/<hostname>/<pid>_pc_sampling_stochastic.csv   (preferred: has Stall_Reason)
+#   pcsamp_<tag>/<hostname>/<pid>_pc_sampling_host_trap.csv    (PCs only, NO Stall_Reason column)
+# Pass `--output-file <prefix>` to collapse to a flat
+# `pcsamp_<tag>/<prefix>_pc_sampling_*.csv` (no <hostname>/<pid>_ default).
+# Glob accepts both the default <hostname>/ nesting, an explicit flat layout,
+# and the older rocprof-compute-wrapped form (pcsamp_<tag>/pmc_1/<host>/...).
 import os, glob, pandas as pd
 RUN = os.environ["PROFILE_RUN_DIR"]
 csvs = sorted(set(

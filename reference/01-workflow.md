@@ -170,8 +170,9 @@ python3 "$SKILL/helpers/analyze_reports.py" --run-dir "$PROFILE_RUN_DIR" \
     --rpc "$PROFILE_RUN_DIR/reports/rpc_<tag>" --tag <tag> \
     --kernel "YOUR_KERNEL_SUBSTRING" --arch gfx942   # or gfx950 for MI355X
 
-# Per-source-line stall hotspots — --pcsamp-dir globs the flat rocprofv3
-# layout (pcsamp_<tag>/<pid>_pc_sampling_{stochastic,host_trap}.csv).
+# Per-source-line stall hotspots — --pcsamp-dir rglobs the rocprofv3 layout
+# (default pcsamp_<tag>/<hostname>/<pid>_pc_sampling_{stochastic,host_trap}.csv,
+# or flat pcsamp_<tag>/<prefix>_pc_sampling_*.csv when --output-file is set).
 # Prefer stochastic CSV: it has the `Stall_Reason` column for a true
 # wait-reason breakdown. host_trap only gives sampled PCs (hotspots).
 python3 "$SKILL/helpers/extract_stall_hotspots.py" --run-dir "$PROFILE_RUN_DIR" \

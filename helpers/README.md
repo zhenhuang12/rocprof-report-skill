@@ -55,12 +55,14 @@ python3 $SKILL/helpers/analyze_reports.py --run-dir $PROFILE_RUN_DIR \
     --rpc $PROFILE_RUN_DIR/reports/rpc_<tag2> --tag <tag2> \
     --kernel "my_kernel_regex" --arch gfx942
 
-# Per-line stall hotspots from PC sampling — prefer --pcsamp-dir; it globs the
-# rocprofv3 FLAT layout (pcsamp_<tag>/<pid>_pc_sampling_{stochastic,host_trap}.csv)
-# and falls back to the older nested form (pmc_1/<host>/...) automatically, so
-# you don't have to know the host or PID. Use --pcsamp <file> only when you
-# need to pin a specific CSV. The helper prefers the stochastic CSV when both
-# modes are present — it's the only mode that populates `Stall_Reason`.
+# Per-line stall hotspots from PC sampling — prefer --pcsamp-dir; it rglobs the
+# rocprofv3 default layout (pcsamp_<tag>/<hostname>/<pid>_pc_sampling_{stochastic,host_trap}.csv),
+# the explicit flat form (pcsamp_<tag>/<prefix>_pc_sampling_*.csv when you passed
+# `--output-file <prefix>` to rocprofv3), and the older rocprof-compute-wrapped
+# layout (pmc_1/<host>/...), so you don't have to know the hostname or PID. Use
+# --pcsamp <file> only when you need to pin a specific CSV. The helper prefers
+# the stochastic CSV when both modes are present — it's the only mode that
+# populates `Stall_Reason`.
 python3 $SKILL/helpers/extract_stall_hotspots.py --run-dir $PROFILE_RUN_DIR \
     --pcsamp-dir $PROFILE_RUN_DIR/reports/pcsamp_<tag1> --tag <tag1> \
     --pcsamp-dir $PROFILE_RUN_DIR/reports/pcsamp_<tag2> --tag <tag2>

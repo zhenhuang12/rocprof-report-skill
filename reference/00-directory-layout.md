@@ -71,7 +71,7 @@ profile/<run_name>/
 │   ├── <kernel>_harness            ← compiled binary (with -gline-tables-only)
 │   └── build_command.sh            ← optional: shell script that compiled it
 ├── reports/
-│   ├── trace_<tag1>/               ← rocprofv3 kernel-trace output dir (.csv / .json / .pftrace / .db)
+│   ├── trace_<tag1>/               ← rocprofv3 kernel-trace output dir; by default nested as <hostname>/<pid>_*.csv (use --output-file <prefix> to flatten)
 │   ├── trace_<tag2>/
 │   ├── rpc_<tag1>/                 ← rocprof-compute "profile" output root (the `-p` value)
 │   │   ├── pmc_perf.csv            ← merged PMCs (one row per dispatch × PMC group)
@@ -88,12 +88,12 @@ profile/<run_name>/
 │   ├── rpc_ts_<tag1>/              ← (optional) `rocprofv3 -P` windowed output for timeline view
 │   │   └── <pid>_counter_collection.csv  ← one CSV per window; plot_timeline.py --per-cu
 │   │                                       is the currently supported timeline path
-│   ├── att_<tag1>/                 ← rocprofv3 --att output dir (JSON traces per CU)
+│   ├── att_<tag1>/                 ← rocprofv3 --att output dir; default <hostname>/<pid>_*.{csv,json} (override via --output-file)
 │   ├── att_<tag2>/
-│   ├── pcsamp_<tag1>/              ← rocprofv3 --pc-sampling output dir (CSV per kernel)
+│   ├── pcsamp_<tag1>/              ← rocprofv3 --pc-sampling output dir; default <hostname>/<pid>_pc_sampling_{stochastic,host_trap}.csv (override via --output-file)
 │   ├── pcsamp_<tag2>/
 │   ├── pmc_<tag1>/                 ← (optional) targeted `rocprofv3 --pmc ...` output dir (Recipe 4)
-│   └── pmc_<tag2>/                 ←   contains `<pid>_counter_collection.csv` (no rocprof-compute wrapping)
+│   └── pmc_<tag2>/                 ←   default <hostname>/<pid>_counter_collection.csv (no rocprof-compute wrapping; pass --output-file <prefix> to flatten)
 └── analysis/                       ← only the OUTPUT artifacts live here;
     │                                  invoke the helpers from $SKILL/helpers/
     │                                  with --run-dir, do NOT copy them in.

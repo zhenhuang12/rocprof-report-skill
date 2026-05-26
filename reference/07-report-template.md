@@ -62,8 +62,10 @@ Minimal runnable command listing:
     # wait-reason breakdown).
     # See https://rocm.docs.amd.com/projects/rocprofiler-sdk/en/latest/how-to/using-pc-sampling.html
     # Stochastic supports `--pc-sampling-unit cycles` or `instructions` (NOT `time`).
-    # Output lands FLAT under -d with PID prefix:
-    #   pcsamp_<tag>/<pid>_pc_sampling_stochastic.csv
+    # Output default: rocprofv3 nests under <hostname>/ with a PID prefix —
+    #   pcsamp_<tag>/<hostname>/<pid>_pc_sampling_stochastic.csv
+    # Pass `--output-file <prefix>` to collapse to a flat
+    #   pcsamp_<tag>/<prefix>_pc_sampling_stochastic.csv
     rocprofv3 --pc-sampling-beta-enabled \
         --pc-sampling-method stochastic \
         --pc-sampling-interval 1048576 --pc-sampling-unit cycles \
@@ -102,9 +104,10 @@ Minimal runnable command listing:
     │   │    child; helpers handle either form.)
     │   ├── rpc_ts_<tag>/                   ← optional `rocprofv3 -P` windowed PMC pass
     │   │   └── <pid>_counter_collection.csv ← one CSV per window; see Recipe 2b
-    │   ├── pcsamp_<tag>/                   ← rocprofv3 PC sampling output
+    │   ├── pcsamp_<tag>/<hostname>/        ← rocprofv3 PC sampling output (default nests under <hostname>/)
     │   │   ├── <pid>_pc_sampling_stochastic.csv   ← stochastic mode: has the `Stall_Reason` column (use for breakdown)
     │   │   └── <pid>_pc_sampling_host_trap.csv    ← host_trap mode: per-line hotspots only (no `Stall_Reason`)
+    │   │   (Pass `--output-file <prefix>` to collapse to a flat layout.)
     │   └── att_<tag>/                      ← optional ATT (one JSON per SE/CU)
     └── analysis/                           ← extracted metrics (helpers run from $SKILL/helpers/)
         ├── details_<tag>.txt               ← `rocprof-compute analyze` dump

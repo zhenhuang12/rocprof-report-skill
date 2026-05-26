@@ -17,9 +17,13 @@ schemas — prefer STOCHASTIC, which is the only mode that emits `Stall_Reason`:
 
 See https://rocm.docs.amd.com/projects/rocprofiler-sdk/en/latest/how-to/using-pc-sampling.html
 
-Output paths are FLAT (no nesting) under -d with a PID prefix:
-    <pcsamp_dir>/<pid>_pc_sampling_stochastic.csv
-    <pcsamp_dir>/<pid>_pc_sampling_host_trap.csv
+Output paths (rocprofv3 default `-d <pcsamp_dir>` with no `--output-file`)
+nest under `<hostname>/` with a PID prefix:
+    <pcsamp_dir>/<hostname>/<pid>_pc_sampling_stochastic.csv
+    <pcsamp_dir>/<hostname>/<pid>_pc_sampling_host_trap.csv
+Pass `--output-file <prefix>` to rocprofv3 to collapse to a flat
+    <pcsamp_dir>/<prefix>_pc_sampling_*.csv
+layout. `_resolve_pcsamp_dir` rglobs and handles either form.
 
 Stochastic CSV columns:
     Sample_Timestamp, Exec_Mask, Dispatch_Id, Instruction (PC),
@@ -257,11 +261,15 @@ def aggregate_att_json_dir(att_dir):
 def _resolve_pcsamp_dir(d):
     """Recursively glob a pcsamp_<tag> directory for the PC-sampling CSV.
 
-    rocprofv3 writes the CSV FLAT under -d with a PID prefix, e.g.
-    `<pcsamp_dir>/<pid>_pc_sampling_stochastic.csv` or
-    `<pcsamp_dir>/<pid>_pc_sampling_host_trap.csv`. We also accept the older
-    nested layout (`pmc_1/<host>/...`) as a fallback so this script keeps
-    working across rocprofv3 versions.
+    rocprofv3's default `-d <pcsamp_dir>` (no `--output-file`) nests under
+    `<hostname>/` with a PID prefix:
+        `<pcsamp_dir>/<hostname>/<pid>_pc_sampling_stochastic.csv` or
+        `<pcsamp_dir>/<hostname>/<pid>_pc_sampling_host_trap.csv`.
+    Passing `--output-file <prefix>` collapses that to a flat
+        `<pcsamp_dir>/<prefix>_pc_sampling_*.csv`.
+    The rocprof-compute wrapper produces a third, older `pmc_1/<host>/...`
+    layout. We rglob and accept all three so this script keeps working across
+    rocprofv3 versions and invocation styles.
 
     When both stochastic and host_trap CSVs are present, we prefer **stochastic**
     — it's the only mode that emits the `Stall_Reason` column needed for a true

@@ -156,12 +156,14 @@ rocprofv3 --pc-sampling-beta-enabled \
 | `--kernel-include-regex` | Limits sampling to matching kernels. |
 | `-f` / `--output-format` | Format of output: `{csv, json, pftrace, otf2, rocpd}`. Use `csv` for downstream pandas parsing. |
 
-Output paths land **flat** under `-d` with a PID prefix (NOT nested under `pmc_1/<host>/`, which is the PMC counter-collection layout):
+rocprofv3 nests output under `<hostname>/` by default. With only `-d <dir>` set (no `--output-file`), the SDK's documented default path is `%hostname%/%pid%`, so the CSVs land at:
 
 ```
-pcsamp_<tag>/<pid>_pc_sampling_stochastic.csv   # stochastic: has Stall_Reason
-pcsamp_<tag>/<pid>_pc_sampling_host_trap.csv    # host_trap: sampled PCs only, NO Stall_Reason
+pcsamp_<tag>/<hostname>/<pid>_pc_sampling_stochastic.csv   # stochastic: has Stall_Reason
+pcsamp_<tag>/<hostname>/<pid>_pc_sampling_host_trap.csv    # host_trap: sampled PCs only, NO Stall_Reason
 ```
+
+Pass `--output-file <prefix>` to override that default and collapse to a flat `<dir>/<prefix>_pc_sampling_*.csv`. The helper `_resolve_pcsamp_dir` `rglob`s for `*_pc_sampling_*.csv`, so either layout works.
 
 Stochastic CSV columns (per AMD's PC-sampling docs): `Sample_Timestamp`, `Exec_Mask`, `Dispatch_Id`, `Instruction` (PC), `Instruction_Comment` (the ISA mnemonic — the SASS-equivalent text on AMD), `Correlation_Id`, `Wave_Issued_Instruction` (0 = stalled / 1 = productively issued), `Instruction_Type`, `Stall_Reason` (populated only when `Wave_Issued_Instruction == 0`), and `Wave_Count`. The `Stall_Reason` value is one of the `ROCPROFILER_PC_SAMPLING_INSTRUCTION_NOT_ISSUED_REASON_*` enum values: `NONE`, `NO_INSTRUCTION_AVAILABLE`, `ALU_DEPENDENCY`, `WAITCNT`, `INTERNAL_INSTRUCTION`, `BARRIER_WAIT`, `ARBITER_NOT_WIN`, `ARBITER_WIN_EX_STALL`, `OTHER_WAIT`, `SLEEP_WAIT`. Source attribution (`file:line`) requires `-gline-tables-only`/`-g` on the build and is reconstructed from `Instruction` via `addr2line` against the binary.
 
@@ -319,7 +321,7 @@ rocprof-compute analyze --list-metrics gfx942        # MI300X
 rocprof-compute analyze --list-metrics gfx950        # MI355X
 ```
 
-Top-level block / section IDs (verified from `--list-metrics gfx942` on rocprof-compute 7.x). `-b` accepts EITHER a block ID like `12` OR a metric ID like `12.1.1` OR a block alias like `lds`/`l1i`/`sl1d`.
+Top-level block / section IDs (verified from `--list-metrics gfx942` on rocprof-compute 7.x). In **analyze** mode, `-b` accepts EITHER a block ID like `12` OR a metric ID like `12.1.1`. There is no alias map — `-b lds` / `-b l1i` / `-b sl1d` are not recognized; use `--list-metrics <gfx>` to find the right ID.
 
 | ID | Block | What it tells you |
 |---|---|---|
