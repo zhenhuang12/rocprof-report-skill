@@ -5,11 +5,17 @@ Reads PC-sampling CSV produced by:
     # Note the underscore in `host_trap` (not `host-trap`).
     # `host_trap` only supports `--pc-sampling-unit time`; the `cycles` and
     # `instructions` units are stochastic-only.
+    # For host_trap + time, --pc-sampling-interval is in MICROSECONDS
+    # (1000 = 1 ms).
     rocprofv3 --pc-sampling-beta-enabled \\
         --pc-sampling-method host_trap \\
-        --pc-sampling-interval 1000000 --pc-sampling-unit time \\
+        --pc-sampling-interval 1000 --pc-sampling-unit time \\
         --kernel-include-regex "<regex>" \\
+        -f csv \\
         -d <pcsamp_dir> -- ./harness [args]
+
+The CSV file name is install-specific (e.g. pc_sampling_host_trap_v0.csv);
+pass `--pcsamp-dir <pcsamp_dir>` to let this script glob for it.
 
 The CSV columns are typically:
     Dispatch_ID, Sample_Time_ns, Instruction_Address,
@@ -24,9 +30,11 @@ Produces in `<run-dir>/analysis/`:
                                per-Wait_Reason top lines.
 
 Usage:
-    # PC sampling (preferred — lower overhead)
+    # PC sampling (preferred — lower overhead). Either pass the CSV directly
+    # via --pcsamp, or pass the directory via --pcsamp-dir and let the script
+    # glob `pc_sampling_*.csv` inside it.
     python3 extract_stall_hotspots.py --run-dir profile/myrun \\
-            --pcsamp profile/myrun/reports/pcsamp_<tag>/pc_sampling_host_trap_v0.csv \\
+            --pcsamp-dir profile/myrun/reports/pcsamp_<tag> \\
             --tag <tag>
 
     # ATT (heavier, more detail)
@@ -191,20 +199,47 @@ def aggregate_att_json_dir(att_dir):
     return per_line, totals
 
 
+def _resolve_pcsamp_dir(d):
+    """Glob a pcsamp_<tag> directory for the PC-sampling CSV."""
+    matches = sorted(Path(d).glob("pc_sampling_*.csv"))
+    if not matches:
+        raise FileNotFoundError(
+            f"No pc_sampling_*.csv found under {d}; check rocprofv3 -f csv was set"
+        )
+    if len(matches) > 1:
+        # Multiple CSVs (e.g. host_trap + stochastic): prefer host_trap first
+        # for determinism. Caller can pass --pcsamp directly to override.
+        ht = [m for m in matches if "host_trap" in m.name]
+        return ht[0] if ht else matches[0]
+    return matches[0]
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--run-dir", type=Path, required=True)
     ap.add_argument("--pcsamp", type=Path, action="append", default=[],
                     help="Path to PC-sampling CSV. Pass multiple with repeated flag.")
+    ap.add_argument("--pcsamp-dir", type=Path, action="append", default=[],
+                    help="Path to a pcsamp_<tag> dir; globs pc_sampling_*.csv inside.")
     ap.add_argument("--att-dir", type=Path, action="append", default=[],
                     help="Path to an att_<tag> directory containing per-SE/CU JSON.")
     ap.add_argument("--tag", type=str, action="append", required=True)
     ap.add_argument("--top", type=int, default=30)
     args = ap.parse_args()
 
-    sources = list(args.pcsamp) + list(args.att_dir)
+    # Resolve pcsamp-dir to concrete CSV paths
+    pcsamp_resolved = []
+    for d in args.pcsamp_dir:
+        try:
+            pcsamp_resolved.append(_resolve_pcsamp_dir(d))
+        except FileNotFoundError as e:
+            print(f"[skip] {e}", file=sys.stderr)
+            pcsamp_resolved.append(None)
+
+    sources = list(args.pcsamp) + pcsamp_resolved + list(args.att_dir)
+    sources = [s for s in sources if s is not None]
     if len(sources) != len(args.tag):
-        ap.error("Total --pcsamp + --att-dir count must equal --tag count")
+        ap.error("Total --pcsamp + --pcsamp-dir + --att-dir count must equal --tag count")
 
     analysis_dir = args.run_dir / "analysis"
     analysis_dir.mkdir(parents=True, exist_ok=True)

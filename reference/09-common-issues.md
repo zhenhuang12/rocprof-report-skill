@@ -87,7 +87,7 @@ For JIT / framework-integrated builds:
 
 1. **Beta flag missing.** PC sampling is gated behind a beta flag in ROCm 6.4+. The CLI needs `--pc-sampling-beta-enabled` (or set `ROCPROFILER_PC_SAMPLING_BETA_ENABLED=1` in the environment).
 2. **Method not supported on your hardware.** Try `--pc-sampling-method host_trap` first (note the underscore, not `host-trap`) — it works on MI200+ and is the most portable. `stochastic` is lower-overhead but requires MI300+ and a recent ROCm build with the kernel-mode feature compiled in.
-3. **Sampling interval too coarse / wrong unit.** With `host_trap` you MUST use `--pc-sampling-unit time` (interval is nanoseconds; 10⁶ ns = 1 ms is a sensible default — drop to 10⁵ for sub-ms kernels). Passing `cycles` or `instructions` with `host_trap` is rejected at runtime as "PC sampling configuration is not supported"; those units are stochastic-only.
+3. **Sampling interval too coarse / wrong unit.** With `host_trap` you MUST use `--pc-sampling-unit time`; the interval is in **microseconds** (1000 = 1 ms is a sensible default; drop to 100 for sub-ms kernels). Passing `cycles` or `instructions` with `host_trap` is rejected at runtime as "PC sampling configuration is not supported"; those units are stochastic-only.
 4. **Kernel too short.** Kernels under ~50 µs may not produce useful sample counts. Increase work in the harness (run the kernel in a small loop — but be aware rocprofv3 replays each PMC group, so this can blow up wall time).
 5. **Permission issue.** Some ROCm builds require `CAP_PERFMON` for PC sampling. Try `sudo` to confirm it's a perms issue.
 
@@ -106,7 +106,7 @@ For JIT / framework-integrated builds:
 ## rocprof-compute takes forever to finish
 
 1. **PMC group replays.** `rocprof-compute profile` runs ~15-30 passes (one per PMC counter group), and rocprofv3 **replays the entire binary** each pass — not just the kernel. If your kernel takes 10 ms but init takes 5 s, each pass is 5.01 s and a full profile is ~150 s. Move host-side init out of the profile window, or shrink the harness.
-2. **Roofline benchmarks add ~30 s.** Skip `--roofline` once you've cached the GPU's roofline on this host; the result is reusable across runs of the same kernel.
+2. **Roofline benchmarks add ~30 s on first run.** Roofline is ON by default (there is NO `--roofline` flag — invoking it crashes). Pass `--no-roof` to `rocprof-compute profile` to skip the roofline pass once you've cached it.
 3. **Don't profile with debug builds.** `-O0 -g` is ~10× slower than `-O3 -gline-tables-only` and the codegen doesn't represent prod.
 
 ---
@@ -210,10 +210,10 @@ rocprofv3 handles HIP Graph launches — each captured kernel shows up as a sepa
 
 ### Reports don't match colleague's results
 
-- Check ROCm version (`rocm-smi --showversion`, `rocprofv3 --version`, `rocprof-compute --version`). Counter names and section IDs occasionally shift.
-- Check GPU partition state at profile time (recorded in `sysinfo.csv`).
+- Check ROCm version (`rocm-smi --showversion`, `rocprofv3 --version`, `rocprof-compute --version`). Counter names and block IDs occasionally shift.
+- Check GPU partition state at profile time (recorded in `sysinfo.csv` — wide single-row format on current rocprof-compute).
 - Check exact hipcc invocation — a stray `-O0`, missing `-gline-tables-only`, or wrong `--offload-arch` makes a big difference.
-- Check whether `--roofline` was run; SoL percentages are normalized against the cached roofline benchmark.
+- Check whether roofline ran (default-on; suppress with `--no-roof`). SoL percentages are normalized against the cached roofline benchmark.
 
 ---
 
@@ -228,14 +228,15 @@ It depends on the kernel type:
 
 Always check both SoL gaps:
 - If `HBM SoL` is high (>70%) and `Compute SoL` is low, the kernel is correctly HBM-bound — focus on reducing traffic, not raising compute.
-- If both are low, the kernel is latency-bound — look at the stall breakdown (`SQ_WAIT_INST_VMEM`, etc.).
+- If both are low, the kernel is latency-bound — look at the PC-sampling `Wait_Reason` breakdown (the only granular wait classification on gfx942/gfx950; `SQ_WAIT_INST_VMEM` is **not** a PMC on these gens — only `SQ_WAIT_ANY`, `SQ_WAIT_INST_ANY`, `SQ_WAIT_INST_LDS` exist as PMCs).
 
 ### "rocprof-compute says `Wavefront occupancy = X / 8` — is that bad?"
 
-Achieved occupancy < theoretical means waves can't all be resident — usually VGPR/AGPR or LDS pressure. Check `Launch Statistics` (§2.1.0):
-- High `VGPRs` (>128/wave) → register pressure
-- High `LDS_Per_Workgroup` relative to CU LDS budget (64 KB/CU on gfx942) → LDS pressure limits resident workgroups
+Achieved occupancy < theoretical means waves can't all be resident — usually VGPR/AGPR or LDS pressure. Check the wavefront-launch block (`-b 7` in `rocprof-compute analyze`):
+- High `Arch_VGPR` (>128/work-item) → register pressure
+- High `LDS_Per_Workgroup` relative to CU LDS budget (**64 KB/CU on BOTH gfx942 and gfx950** — CDNA4 did not enlarge it) → LDS pressure limits resident workgroups
 - Non-zero `Scratch_Per_Workitem` → spill (kills perf)
+- High `Accum_VGPR` (AGPR pool, CDNA3+) on MFMA-heavy kernels → MFMA accumulator pressure
 
 Fix: shrink VGPR with `__launch_bounds__`, refactor to use AGPR for MFMA accumulators (CDNA3+), pad/cut LDS allocation, hoist loop-invariants out of the kernel.
 
@@ -261,6 +262,6 @@ Either:
 | MI300X (gfx942) discrete | 6.0 | Full support |
 | MI300A APU (gfx942 APU) | 6.0 | Shares counters with discrete; xGMI traffic visible |
 | MI355X (gfx950) | **7.0** | 6.x will refuse `--offload-arch=gfx950` |
-| FP4 / FP6 / MXFP MFMA counters | 7.0 + gfx950 | CDNA4 only |
+| MFMA `_F6F4` / `_XF32` counters | 7.0 + gfx950 | CDNA4 only — no separate `_F4` / `_F6` / `_MXFP4` / `_MXFP6` / `_MXFP8` PMC suffixes |
 | ROCprof Compute Viewer | 6.3 | GUI for rocprof-compute output |
 | RGP (Radeon GPU Profiler) | n/a | **Does NOT support CDNA / Instinct.** Use ROCprof Compute Viewer instead. |

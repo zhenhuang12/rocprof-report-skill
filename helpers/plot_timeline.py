@@ -47,16 +47,17 @@ except ImportError as e:  # pragma: no cover
 
 
 DEFAULT_COUNTERS = [
+    # Verified PMC counters on gfx942 / gfx950. Granular SQ_WAIT_INST_VMEM /
+    # WAIT_BARRIER are NOT PMCs on these gens — they come from PC sampling
+    # only. Use extract_stall_hotspots.py for that classification.
     "SQ_WAVES",
     "SQ_BUSY_CYCLES",
-    "SQ_WAIT_INST_VMEM",
+    "SQ_WAIT_INST_ANY",
     "SQ_WAIT_INST_LDS",
-    "SQ_WAIT_BARRIER",
     "SQ_VALU_MFMA_BUSY_CYCLES",
     "TCC_HIT_sum",
     "TCC_MISS_sum",
-    "TCC_EA0_RDREQ_32B_sum",
-    "TCC_EA1_RDREQ_32B_sum",
+    "TCC_EA0_RDREQ_32B_sum",   # TCC_EA1_* does NOT exist on gfx942/gfx950
     "GRBM_GUI_ACTIVE",
 ]
 
@@ -173,7 +174,9 @@ def plot_per_cu(rpc_dir, counters, rows, cols):
         lines.append(
             f"\nper-CU mode: no per-CU columns found in {pmc_csv}. "
             "This build may only expose chip-wide aggregates; use "
-            "`rocprof-compute analyze --block 23` (workgroup imbalance) "
+            "`rocprof-compute analyze -b 5` (CS / Wavefront launch) or "
+            "`-b 11` (Instruction Mix) — run `rocprof-compute analyze "
+            "--list-metrics <gfx_arch>` to enumerate block IDs — "
             "or rocprofv3 --att for per-CU evidence."
         )
     return lines

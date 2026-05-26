@@ -31,6 +31,7 @@ Cheapest pass — runtime APIs, HSA dispatch records, kernel begin/end timestamp
 ```bash
 rocprofv3 --kernel-trace --hip-trace --hsa-trace \
     --kernel-include-regex "KERNEL_REGEX" \
+    -f csv \
     -d $PROFILE_RUN_DIR/reports/trace_<tag> \
     -- ./harness [args]
 ```
@@ -41,10 +42,11 @@ rocprofv3 --kernel-trace --hip-trace --hsa-trace \
 | `--hip-trace` | Record HIP runtime API calls. |
 | `--hsa-trace` | Record HSA runtime API calls (lower-level, useful when you want to see queue / signal activity). |
 | `--kernel-include-regex` | Only trace kernels whose demangled name matches. Reduces output volume. Itanium-ABI demangled symbol — same as `llvm-objdump --syms --demangle`. |
-| `-d` | Output directory (rocprofv3 writes multiple files inside). |
+| `-d` | Output directory (rocprofv3 writes multiple files inside, under `%hostname%/%pid%/` by default). |
+| `-f` / `--output-format` | `{csv, json, pftrace, otf2, rocpd}`. Pass `csv` to get the human-/pandas-friendly CSVs; the default depends on the build. |
 | `--` | Separates rocprofv3 options from the command to launch. |
 
-Output: `*_kernel_trace.csv`, `*_hip_api_trace.csv`, `*_hsa_api_trace.csv` (ROCm 6.x) or a single `*.db` SQLite (ROCm 7+ default, the `rocpd` schema). Add `--output-format pftrace` for a Perfetto trace, or `--output-format json` for the rocprofv3 JSON.
+Output: `*_kernel_trace.csv`, `*_hip_api_trace.csv`, `*_hsa_api_trace.csv` when `-f csv`; with `-f rocpd` you get a single `.db` SQLite (the `rocpd` schema, default on ROCm 7+). Add `-f pftrace` for a Perfetto trace, or `-f json` for the rocprofv3 JSON.
 
 Replay count: 1 pass. Wall time: kernel duration + ~tens of ms init.
 
@@ -57,18 +59,20 @@ This is the bread-and-butter run. `rocprof-compute profile` collects the PMC gro
 ```bash
 rocprof-compute profile \
     -n <run_name>_<tag> \
-    --roofline \
     -k "KERNEL_SUBSTRING" \
     -p $PROFILE_RUN_DIR/reports/rpc_<tag> \
     -- ./harness [args]
 ```
 
+> **Roofline is ON by default** in current rocprof-compute (7.x). Pass `--no-roof` to skip the empirical roofline benchmarks; pass `--roof-only` to run them without the regular PMC pass. **There is no `--roofline` flag** — invoking it crashes. `--no-roof` cannot be combined with `--set` or `--roof-only` (per-help), but `--no-roof` *is* compatible with `-b`.
+
 | Flag | Meaning |
 |---|---|
 | `-n` / `--name` | Workload name used in report titles (and, only when `-p` is **omitted**, in the default output path). |
-| `--roofline` | Also run the empirical roofline benchmarks (peak HBM BW, peak FLOPS, …) so the section reports can place this kernel on the roofline plot. Skips if you already have a cached roofline for this GPU. |
+| `--no-roof` | Skip the empirical roofline benchmarks (otherwise they run by default and add ~30 s). |
 | `-k` / `--kernel` | Filter on demangled kernel names (substring, accepts multiple values). Limits the kernels measured per PMC group. (Note: the flag is `--kernel`, not `--kernel-name`.) |
-| `-p` / `--path` | Output directory. When you pass `-p`, rocprof-compute writes flat under that directory: `pmc_perf.csv`, `timestamps.csv`, `sysinfo.csv`, `roofline.csv`, plus a `perfmon/` subdir with one `.txt`/`.yaml` per PMC group. When `-p` is omitted, output defaults to `./workloads/<name>/<gpu_model>/`. |
+| `-p` / `--path` | Output directory. When you pass `-p`, rocprof-compute writes **flat** under that directory: `pmc_perf.csv`, `sysinfo.csv`, `log.txt`, `profiling_config.yaml`, plus a `perfmon/<group>.{txt,yaml}` subdir and an `out/pmc_<N>/<hostname>/<pid>_{kernel_trace,counter_collection,agent_info}.csv` raw-per-pass subdir. There is no `timestamps.csv` and no top-level `roofline.csv` (when roofline runs, the artifact is a PDF). When `-p` is omitted, output defaults to `<cwd>/workloads/<name>/`. |
+| `-b` / `--block` | Filter to specific metric IDs (e.g. `12.1.1`), block IDs (e.g. `12`), or block aliases (e.g. `lds`, `l1i`, `sl1d`). |
 
 Replay count: ~15-30 passes (one per PMC group; rocprofv3 replays the whole binary, not just the kernel). Wall time: kernel time × number of groups + init.
 
@@ -82,8 +86,11 @@ rocprof-compute analyze -p $PROFILE_RUN_DIR/reports/rpc_<tag> > \
 # A single section (e.g., 2.1.15 Memory Workload)
 rocprof-compute analyze -p $PROFILE_RUN_DIR/reports/rpc_<tag> -b 15
 
-# List all sections
+# List all kernels & dispatches (NOT section IDs)
 rocprof-compute analyze -p $PROFILE_RUN_DIR/reports/rpc_<tag> --list-stats
+
+# List all section / metric IDs for this arch (gfx942 for MI300X, gfx950 for MI355X)
+rocprof-compute analyze --list-metrics gfx942
 ```
 
 **Always read `details_<tag>.txt` first.** Each section has a "Speed-of-Light" line that names the bottleneck subsystem and a numeric gap to peak — this is the AMD analog of NCU's `Est. Speedup` rule.
@@ -101,9 +108,10 @@ Two options. Prefer PC sampling (lower overhead) when available; fall back to AT
 ```bash
 rocprofv3 --pc-sampling-beta-enabled \
     --pc-sampling-method host_trap \
-    --pc-sampling-interval 1000000 \
+    --pc-sampling-interval 1000 \
     --pc-sampling-unit time \
     --kernel-include-regex "KERNEL_REGEX" \
+    -f csv \
     -d $PROFILE_RUN_DIR/reports/pcsamp_<tag> \
     -- ./harness [args]
 ```
@@ -112,9 +120,10 @@ rocprofv3 --pc-sampling-beta-enabled \
 |---|---|
 | `--pc-sampling-beta-enabled` | **Required in ROCm 6.4+** — PC sampling is still a beta feature; sets `ROCPROFILER_PC_SAMPLING_BETA_ENABLED=1` internally. |
 | `--pc-sampling-method` | `host_trap` (works on MI200+) is the most portable; `stochastic` is lower-overhead on MI300+ if your ROCm build enables it. **Note the underscore — not `host-trap`.** |
-| `--pc-sampling-interval` | Sample every N units (per `--pc-sampling-unit`). For `host_trap` + `time`, units are nanoseconds; 10⁶ ns = 1 ms is a sensible starting point. |
+| `--pc-sampling-interval` | Sample every N units (per `--pc-sampling-unit`). For `host_trap` + `time`, units are **microseconds** (the rocprof-compute default is 1048576 µs ≈ 1 s, which is FAR too coarse for short kernels). `1000` = 1 ms is a sensible starting point; drop to `100` for sub-ms kernels. |
 | `--pc-sampling-unit` | **`host_trap` only accepts `time`** — passing `cycles` or `instructions` with `host_trap` is rejected at runtime as "PC sampling configuration is not supported". `cycles` and `instructions` are for `stochastic`. |
 | `--kernel-include-regex` | Limits sampling to matching kernels. |
+| `-f` / `--output-format` | Format of output: `{csv, json, pftrace, otf2, rocpd}`. Use `csv` for downstream pandas parsing; default writes to `%hostname%/%pid%/` structure. |
 
 Output: per-kernel CSV with `Instruction_Address`, `Source` (file:line, populated only when compiled with `-gline-tables-only`/`-g`), `Instruction_Comment` (the SASS-equivalent text on AMD: the ISA mnemonic), `Wait_Reason`, `Sample_Count`.
 
@@ -137,7 +146,7 @@ rocprofv3 --att \
 | Flag | Meaning |
 |---|---|
 | `--att` | Enable Advanced Thread Trace. |
-| `--att-target-cu N` | Capture this CU index (within each enabled SE). |
+| `--att-target-cu N` | Capture this CU index (within each enabled SE). **Default is `1`, not 0.** `--att-target-cu 0` is a valid single-CU choice (CU 0). To cover more CUs, run multiple invocations or script around it. |
 | `--att-shader-engine-mask` | Bitmask of SEs to enable. `0xF` = first 4 SEs. |
 | `--att-buffer-size` | Per-SE trace buffer in bytes. Bump if traces are getting truncated. |
 
@@ -151,29 +160,31 @@ If you already know which counters you want (e.g., re-running after a code chang
 
 ```bash
 # Inline list
-rocprofv3 --pmc SQ_WAVES,SQ_INSTS_VALU,SQ_INSTS_MFMA,SQ_WAIT_INST_VMEM,TCP_TCC_READ_REQ_sum,TCC_EA0_RDREQ_sum,GRBM_GUI_ACTIVE \
+rocprofv3 --pmc SQ_WAVES,SQ_INSTS_VALU,SQ_INSTS_MFMA,SQ_WAIT_INST_ANY,TCP_TCC_READ_REQ_sum,TCC_EA0_RDREQ_sum,GRBM_GUI_ACTIVE \
     --kernel-include-regex "KERNEL_REGEX" \
+    -f csv \
     -d $PROFILE_RUN_DIR/reports/pmc_<tag> \
     -- ./harness [args]
 
 # Or a YAML/JSON job file (preferred for reproducibility). Each `jobs` entry
 # mirrors a single rocprofv3 CLI invocation; there is no `name:` field at the
 # job level (use the file name or comments to label).
+# Note: gfx942 / gfx950 only expose `TCC_EA0_*` (no `TCC_EA1_*`) and only the
+# three SQ_WAIT_* PMCs `SQ_WAIT_ANY`, `SQ_WAIT_INST_ANY`, `SQ_WAIT_INST_LDS`.
 cat > /tmp/pmc.yaml <<'EOF'
 jobs:
   - pmc:
       - SQ_WAVES
       - SQ_INSTS_VALU
-      - SQ_WAIT_INST_VMEM
+      - SQ_WAIT_INST_ANY
       - SQ_WAIT_INST_LDS
       - SQ_LDS_BANK_CONFLICT
       - TCC_EA0_RDREQ_sum
       - TCC_EA0_RDREQ_32B_sum
-      - TCC_EA1_RDREQ_sum
       - GRBM_GUI_ACTIVE
     kernel_include_regex: "KERNEL_REGEX"
 EOF
-rocprofv3 -i /tmp/pmc.yaml -d $PROFILE_RUN_DIR/reports/pmc_<tag> -- ./harness [args]
+rocprofv3 -i /tmp/pmc.yaml -f csv -d $PROFILE_RUN_DIR/reports/pmc_<tag> -- ./harness [args]
 ```
 
 A single `pmc:` list must fit in one hardware pass — rocprofv3 will **fail** the job if the counters don't fit, it does not auto-split. To collect more than one pass' worth, add multiple `- pmc: ...` entries under `jobs:` (one entry = one extra pass), or use `pmc_groups:` for explicit grouping. Counters that share a unit (SQ_*, TCP_*, TCC_*) often fit in one group; check `rocprofv3 -L` output for the conflict list.
@@ -203,9 +214,13 @@ rocprof-compute analyze \
 Or in Python (see `04-python-api.md`):
 
 ```python
-import pandas as pd
-d1 = pd.read_csv("$PROFILE_RUN_DIR/reports/rpc_v1/timestamps.csv")
-d2 = pd.read_csv("$PROFILE_RUN_DIR/reports/rpc_v2/timestamps.csv")
+import os, pandas as pd
+RUN = os.environ["PROFILE_RUN_DIR"]
+# rocprof-compute profile does NOT write timestamps.csv. Per-kernel wall-clock
+# duration comes from rocprofv3's kernel_trace.csv (run a separate
+# `rocprofv3 --kernel-trace -f csv -d <path>` to produce it).
+d1 = pd.read_csv(f"{RUN}/reports/trace_v1/<host>/<pid>_kernel_trace.csv")
+d2 = pd.read_csv(f"{RUN}/reports/trace_v2/<host>/<pid>_kernel_trace.csv")
 t1 = (d1["End_Timestamp"] - d1["Start_Timestamp"]).sum()
 t2 = (d2["End_Timestamp"] - d2["Start_Timestamp"]).sum()
 print(f"Speedup: {t1/t2:.2f}x")
@@ -216,28 +231,33 @@ print(f"Speedup: {t1/t2:.2f}x")
 ## What rocprof-compute sections cover
 
 ```bash
-rocprof-compute analyze --list-stats
+# List all kernels & dispatches captured in this run (NOT section IDs).
+rocprof-compute analyze -p <dir> --list-stats
+
+# List all section / metric IDs available for this arch (source of truth).
+rocprof-compute analyze --list-metrics gfx942        # MI300X
+rocprof-compute analyze --list-metrics gfx950        # MI355X
 ```
 
-Section ID map (MI300X, rocprof-compute ROCm 7.x — may shift slightly between releases):
+Top-level block / section IDs (verified from `--list-metrics gfx942` on rocprof-compute 7.x). `-b` accepts EITHER a block ID like `12` OR a metric ID like `12.1.1` OR a block alias like `lds`/`l1i`/`sl1d`.
 
 | ID | Section | What it tells you |
 |---|---|---|
-| 2.1.0  | Launch Statistics             | Grid/block, waves/CU, registers/wave, scratch, LDS |
-| 2.1.1  | Speed-of-Light (SoL)          | % of peak for compute, HBM, vL1, L2, scratch — the headline |
-| 2.1.2  | Wavefront Launch Stats        | Waves/wkg, achieved occupancy, register/LDS pressure |
-| 2.1.5  | Pipeline / instruction mix    | VALU vs MFMA vs VMEM vs LDS instruction counts |
-| 2.1.10 | Compute Units — Compute Pipe  | VALU / SALU / Matrix-core busy %, IPC, FMA |
-| 2.1.11 | Compute Units — Memory Pipe   | Bytes per wavefront, LDS bank conflicts |
-| 2.1.13 | Wavefront Stall Reasons       | `WAIT_INST_VMEM`, `WAIT_INST_LDS`, `WAIT_INST_FLAT`, `WAIT_BARRIER`, plus the PC-sampling Wait_Reason enums |
-| 2.1.15 | Memory — vL1 cache (TCP)      | Hit rate, sectors per request, coalescing |
-| 2.1.16 | Memory — L2 cache (TCC)       | Per-channel hit rate, atomics, bytes |
-| 2.1.17 | Memory — HBM (TCC_EA)         | Per-channel HBM read/write bytes, achieved BW |
-| 2.1.20 | Roofline                       | Compute vs memory roofline, kernel position |
-| 2.1.22 | Scratch / Spill                | Scratch reads/writes (= register spill on AMD) |
-| 2.1.23 | Workgroup imbalance           | Per-CU active-cycle distribution |
+| 2  | SoL / SoL-derived            | % of peak for compute, HBM, vL1, L2, scratch — the headline |
+| 5  | CS / Wavefront               | Wavefront launch / occupancy summary |
+| 7  | Wavefront launch             | Per-dispatch grid, workgroup, register, LDS |
+| 10 | Instruction Mix              | VALU vs MFMA vs VMEM vs LDS instruction counts |
+| 11 | Compute Pipeline             | VALU / SALU / Matrix-core busy %, IPC, FMA |
+| 12 | LDS                          | LDS bank conflicts, bytes, bandwidth |
+| 13 | Instruction Cache            | I-cache hit/miss |
+| 14 | Scalar L1D                   | sL1D cache stats |
+| 15 | TA / TD                      | Texture address / data (vector mem path) |
+| 16 | vL1D cache (TCP)             | Hit rate, sectors per request, coalescing |
+| 17 | L2 cache (TCC)               | Aggregate L2 hit rate, atomics, bytes |
+| 18 | L2 per Channel               | Per-channel hit rate, per-channel HBM traffic |
+| 21 | PC Sampling                  | PC-sample-derived wait-reason breakdown |
 
-(Run `--list-stats` on your actual install to confirm the IDs.)
+(Run `--list-metrics gfx942` on your actual install to confirm; the IDs above are top-level *block* IDs. Sub-metric IDs use decimal nesting like `12.1.1`.)
 
 ---
 

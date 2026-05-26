@@ -16,7 +16,9 @@ For each *observation* below, read:
 - **Deeper fixes** — when first-line isn't enough.
 - **Exceptions** — kernel types where this pattern is actually *expected* and should be left alone.
 
-Most kernels will match 2-4 patterns simultaneously. **Rank them by magnitude** using rocprof-compute's Speed-of-Light gap-to-peak (from section 2.1.1) and the wait-cycle-percentage breakdown. Fix the biggest one first.
+Most kernels will match 2-4 patterns simultaneously. **Rank them by magnitude** using rocprof-compute's Speed-of-Light gap-to-peak (from the top-level SoL section — `-b 2` in `rocprof-compute analyze`) and the wait-cycle-percentage breakdown. Fix the biggest one first.
+
+> **Note on section IDs:** older rocprof-compute (and Omniperf) docs reference dotted IDs like `2.1.1`, `2.1.10`, `2.1.23`. The current rocprof-compute uses **top-level integer block IDs** — see `rocprof-compute analyze --list-metrics gfx942` (or `gfx950`) for the exact mapping (e.g. `2` = top-level SoL, `5` = CS / wavefront, `7` = wavefront launch, `10` = compute pipe, `11` = instruction mix, `12-14` = pipe SoL / cache, `15` = L1D, `16` = L2 cache, `17` = L2-fabric / HBM, `18` = scratch / spill). The patterns below cite both forms where helpful.
 
 > **CU vs SM:** mental model — one CU is the CDNA equivalent of an SM. MI300X has 304 CUs (8 XCDs × 38 CUs, organized over 4 IODs). MI355X has 256 CUs (8 XCDs × 32 CUs, organized over 2 IODs). The patterns below are described in those units.
 
@@ -27,8 +29,8 @@ Most kernels will match 2-4 patterns simultaneously. **Rank them by magnitude** 
 **Signals:**
 - `Workgroups_Launched < CU_count × workgroups_per_CU` (e.g., 64 workgroups on a 304-CU MI300X)
 - `SQ_BUSY_CYCLES / GRBM_GUI_ACTIVE < 0.5` averaged over all CUs
-- rocprof-compute section 2.1.0 reports "waves per CU < 1"
-- rocprof-compute SoL: "compute throughput much less than peak; HBM throughput much less than peak"
+- rocprof-compute wavefront-launch block (`-b 7`) reports "waves per CU < 1"
+- rocprof-compute SoL (`-b 2`): "compute throughput much less than peak; HBM throughput much less than peak"
 
 **Why:** each workgroup occupies at most one CU; with fewer workgroups than CUs, some CUs are completely idle throughout the kernel. On MI300X this is amplified by the XCD partition — workgroups round-robin across 8 XCDs, so a 32-workgroup launch fills only 4 CUs per XCD.
 
@@ -54,7 +56,7 @@ Most kernels will match 2-4 patterns simultaneously. **Rank them by magnitude** 
 
 **Signals:**
 - Multi-workload: `max_seq_len / avg_seq_len > 3` in input distribution.
-- Per-CU active cycles span 5-100× between slowest and fastest CU (rocprof-compute section 2.1.23, or per-CU SQ_BUSY_CYCLES).
+- Per-CU active cycles span 5-100× between slowest and fastest CU (per-CU SQ_BUSY_CYCLES from `pmc_perf.csv`, or rocprof-compute's workgroup-balance breakdown when available).
 - PMC timeline shape: long gradual tail at the end (visible via `plot_timeline.py`).
 - **Per-XCD divergence** on MI300X SPX: SQ_WAVES per XCD shows one XCD running 30%+ longer than the others.
 - `Workgroups_Launched / (CU_count × waves_per_CU) > 1.05` with partial last wave.
@@ -81,7 +83,7 @@ Most kernels will match 2-4 patterns simultaneously. **Rank them by magnitude** 
 ## Pattern C — Uncoalesced global loads
 
 **Signals:**
-- rocprof-compute section 2.1.11: "Bytes per wavefront" for global_load_* is much less than the peak 256 B (e.g. 60 B).
+- rocprof-compute instruction-mix / L1D block (`-b 11` or `-b 15`): "Bytes per wavefront" for global_load_* is much less than the peak 256 B for a coalesced dword load (60 B is bad; for `dwordx4` the peak is 1024 B/wave).
 - `TCP_TCC_READ_REQ_sum / TCP_TOTAL_READ_REQ > 0.7` (most vL1 accesses miss to L2).
 - PC-sampling: primary `Wait_Reason` on the offending load line is `WAIT_INST_VMEM` or `WAIT_VMCNT`.
 - ISA shows `global_load_dword` / `global_load_dwordx2` instead of `global_load_dwordx4`.
@@ -95,7 +97,7 @@ Most kernels will match 2-4 patterns simultaneously. **Rank them by magnitude** 
 **Deeper fixes:**
 - Use LDS as a transposer: coalesced-load to LDS, then arbitrary-access from LDS.
 - Vectorize: replace scalar `global_load_dword` with `global_load_dwordx2` / `dwordx4` (use `int2` / `float4` / built-in `__hip_bfloat162` types). The compiler will emit the 128-bit variant when alignment + width allow.
-- **MI355X**: prefer `global_load_lds_dwordx4` (CDNA4 widened it to 128-bit/lane) to avoid round-tripping through VGPR.
+- **MI355X**: prefer the widest `global_load_lds_*` variant your toolchain emits to avoid round-tripping through VGPR. CDNA4 widened the direct HBM/L2→LDS path versus CDNA3; check the LLVM/AMDGPU back-end ISA emit for the exact per-lane width on your install.
 
 **Exceptions:**
 - Gather/scatter by random index (sparse matmul, embedding lookup) — fundamentally uncoalesced. Sort the indices for locality if possible.
@@ -108,7 +110,7 @@ Most kernels will match 2-4 patterns simultaneously. **Rank them by magnitude** 
 ## Pattern D — Sparse / under-vectorized writes
 
 **Signals:**
-- rocprof-compute "Bytes per wavefront" for global_store_* < 128 B (out of 256 B peak).
+- rocprof-compute "Bytes per wavefront" for global_store_* < 128 B (out of 256 B peak for a coalesced dword store).
 - vL1 → L2 write request count high relative to bytes stored (write coalescing failing).
 - Code contains patterns like `if (lane_id < K) { output[...] = ... }` with K < 32.
 
@@ -131,7 +133,7 @@ If `K < 16`: consider batching multiple iterations' results into a vectorized wr
 ## Pattern E — Latency-bound (VMEM-wait-dominated)
 
 **Signals:**
-- `SQ_WAIT_INST_VMEM / SQ_BUSY_CYCLES > 0.40` or PC-sampling shows `WAIT_INST_VMEM > 40%` of samples.
+- PC-sampling shows `WAIT_INST_VMEM > 40%` of samples (this is the **only** way to get this signal on gfx942/gfx950 — there is no `SQ_WAIT_INST_VMEM` PMC). The coarse `SQ_WAIT_INST_ANY / SQ_BUSY_CYCLES` PMC ratio being high is a corroborating signal but does not classify which kind of wait.
 - `(TCC_EA0_RDREQ_32B_sum × 32) / dur / peak_HBM_BW < 0.1` (→ not HBM-BW-bound).
 - Hotspot lines are global loads (check `stall_hotspots_<tag>.txt`).
 - ISA at the hotspot shows `global_load_*` followed by an `s_waitcnt vmcnt(0)` close behind.
@@ -141,7 +143,7 @@ If `K < 16`: consider batching multiple iterations' results into a vectorized wr
 **First-line fix:** increase in-flight memory requests:
 - **Unroll the load loop** so 4-8 loads are issued before any value is used. Compiler + hardware reorders.
 - **Add more independent waves** — raise occupancy (Pattern J).
-- **`global_load_lds`**: bulk-load directly from HBM to LDS without going through VGPR. CDNA4 widens it to `dwordx4` (128 b/lane).
+- **`global_load_lds`**: bulk-load directly from HBM to LDS without going through VGPR. CDNA4 widens this instruction family vs CDNA3; check ISA emit for the exact widest variant your toolchain produces.
 - **Prefetch with `s_load_dword` + scratch** for the next tile while computing on the current.
 
 **Deeper fixes:**
@@ -167,8 +169,8 @@ If `K < 16`: consider batching multiple iterations' results into a vectorized wr
 **First-line fix:** use **MFMA intrinsics** (`__builtin_amdgcn_mfma_f32_32x32x8bf16_1k`, etc.) or move to **Composable Kernel** / **hipBLASLt**. Hand-rolling tcgen05-equivalent ISA is harder on AMD because there is no TMA/TMEM — you keep tiles in LDS and read with `ds_read_b128`. CK is the canonical path.
 
 **Deeper fixes:**
-- Restructure data layout to meet MFMA tile-shape constraints (e.g., `32x32x8` for BF16 on CDNA3, `mfma_scale_*_16x16x128_f4` on CDNA4).
-- On CDNA4, switch the heavy MFMA path to FP6 or MXFP4 if numerics allow — same hardware throughput as larger formats.
+- Restructure data layout to meet MFMA tile-shape constraints (e.g., `32x32x8` for BF16 on CDNA3; on CDNA4 the new block-scaled `F6F4` family unlocks larger K dims — see `rocprofv3 -L | grep MFMA` for the per-dtype counters your install exposes).
+- On CDNA4, switch the heavy MFMA path to FP6/FP4 (via the `F6F4` family) if numerics allow — substantially higher per-cycle throughput than FP8/FP16.
 
 **Exceptions:**
 - Non-matrix workloads (reduction, sort, element-wise) — Matrix Cores don't help.
@@ -211,7 +213,7 @@ If `K < 16`: consider batching multiple iterations' results into a vectorized wr
 - `WAIT_INST_LDS` waits concentrated on LDS load lines.
 - Access pattern has regular strides that align to bank boundaries.
 
-**Why:** LDS has 32 banks (4 B each on gfx9 — both CDNA3 and CDNA4 keep this layout; CDNA4 just raises the total LDS size per CU); same-bank accesses serialize.
+**Why:** LDS has 32 banks (4 B each on gfx9 — both CDNA3 and CDNA4 keep this layout); same-bank accesses serialize. LDS size per CU is **64 KB on both MI300X and MI355X** — CDNA4 did not enlarge it.
 
 **First-line fix:** padding. `__shared__ float tile[64][33]` instead of `[64][32]` breaks regular bank alignment. If your LDS budget allows it, padding is a one-line win.
 
@@ -252,7 +254,7 @@ If `K < 16`: consider batching multiple iterations' results into a vectorized wr
 
 **Signals:**
 - `Theoretical_Occupancy_pct > 50` but `Achieved_Occupancy_pct << 50`.
-- rocprof-compute section 2.1.2 reports a notable gap with the bottleneck named (`VGPR` / `LDS` / `wkg-size`).
+- rocprof-compute wavefront-launch / CS block (`-b 5` / `-b 7`) reports a notable gap with the bottleneck named (`VGPR` / `LDS` / `wkg-size`).
 
 **Why:** Theoretical occupancy is the max waves that *could* be resident. Achieved is how many are *actually* running. Gap is caused by: stalls (leaves slots empty), imbalance (some CUs empty), short kernel (warmup dominates).
 
@@ -266,8 +268,8 @@ If `K < 16`: consider batching multiple iterations' results into a vectorized wr
 
 **Signals:**
 - `Scratch_Per_Workitem > 0` in launch info.
-- rocprof-compute section 2.1.22 reports non-zero scratch usage.
-- VGPR + AGPR allocations near per-SIMD limits.
+- rocprof-compute scratch / spill block (`-b 18`) reports non-zero scratch usage.
+- `Arch_VGPR` + `Accum_VGPR` allocations near per-SIMD limits (Accum_VGPR is the AGPR pool on CDNA3+).
 - (Counter-side scratch read/write counters exist on most ROCm versions but their exact names
   vary — `rocprofv3 -L | grep -i scratch` on your install if you want to track the cycles
   directly.)
@@ -308,7 +310,7 @@ If `K < 16`: consider batching multiple iterations' results into a vectorized wr
 
 **Signals:**
 - PMC timeline of SQ_INSTS_VALU and TCC_EA0_RDREQ shows a sawtooth (high compute ↔ high HBM alternating).
-- `SQ_WAIT_INST_VMEM` is high *and* HBM throughput is high.
+- PC-sampling `WAIT_INST_VMEM` is high *and* HBM throughput is high (the only granular VMEM-wait classification on gfx942/gfx950 is from PC sampling, not PMC).
 
 **Why:** kernel loads a tile, computes on it, loads next tile — single-buffered.
 
@@ -316,7 +318,7 @@ If `K < 16`: consider batching multiple iterations' results into a vectorized wr
 
 **Deeper fixes:**
 - Multi-stage pipeline (3-4 stages possible with CDNA3 256+256 register budget). Use `global_load_lds` plus an explicit ring buffer of LDS tiles.
-- On CDNA4, LDS remains 64 KB/CU; deeper pipelines have to come from the wider `global_load_lds` per-lane variants and the more flexible VGPR/AGPR repartitioning, not from extra LDS.
+- On CDNA4, LDS remains 64 KB/CU; deeper pipelines have to come from the wider `global_load_lds` variants and the more flexible VGPR/AGPR repartitioning, not from extra LDS.
 
 **Cross-ref:** CDNA principle 15.
 
@@ -325,7 +327,7 @@ If `K < 16`: consider batching multiple iterations' results into a vectorized wr
 ## Pattern N — Wave divergence
 
 **Signals:**
-- rocprof-compute section 2.1.13 reports "wave occupancy under control flow" much less than 64.
+- rocprof-compute wavefront block reports "wave occupancy under control flow" much less than 64 (see `-b 5` and `-b 11` for instruction-mix breakdowns).
 - Divergent branches cluster on specific source lines.
 - ISA shows `s_cbranch_*` followed by `s_andn2_b64 exec, exec, ...` (mask manipulation).
 
@@ -345,7 +347,7 @@ If `K < 16`: consider batching multiple iterations' results into a vectorized wr
 
 ## Ranking template for the final report
 
-When you hand back an optimization plan, rank by `(expected speedup) × (effort ratio)`. rocprof-compute's Speed-of-Light gap-to-peak (section 2.1.1) is your best estimator — a kernel at 14% of peak HBM has 6× of upside on the memory axis (assuming the workload genuinely is memory-bound).
+When you hand back an optimization plan, rank by `(expected speedup) × (effort ratio)`. rocprof-compute's Speed-of-Light gap-to-peak (top-level SoL block — `-b 2` in `rocprof-compute analyze`) is your best estimator — a kernel at 14% of peak HBM has 6× of upside on the memory axis (assuming the workload genuinely is memory-bound).
 
 ```
 Priority 1: <pattern> — <concrete fix>

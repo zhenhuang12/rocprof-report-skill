@@ -30,6 +30,16 @@
 // Why it's structured this way: see ../reference/02-harness-guide.md
 // ============================================================================
 
+// This template intentionally will not compile until you have filled in the
+// kernel-specific sections (allocation shapes, kernel launch, validation). Once
+// you've replaced every TODO(you) below, define HARNESS_FILLED_IN (either by
+// `#define HARNESS_FILLED_IN 1` at the top of your copy, or by passing
+// `-DHARNESS_FILLED_IN=1` to hipcc). The guard prevents accidentally profiling
+// the unmodified skeleton.
+#ifndef HARNESS_FILLED_IN
+#error "harness_template.hip: replace all TODO(you) sections, then define HARNESS_FILLED_IN (e.g. -DHARNESS_FILLED_IN=1)."
+#endif
+
 #include <hip/hip_runtime.h>
 #include <hip/hip_bf16.h>
 #include <hip/hip_fp16.h>

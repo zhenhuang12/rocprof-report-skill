@@ -1,6 +1,6 @@
 # MI300X (gfx942) & MI355X (gfx950) PMC Counter Reference
 
-AMD's PMC namespace is partitioned by IP block: `SQ_*` (Shader Engine/Wave scheduler), `SQC_*` (scalar/instr cache), `TA_*` / `TD_*` (texture address/data, used by vector mem), `TCP_*` (vL1 — per-CU vector L1), `TCC_*` (L2 cache, per-channel), `TCC_EA_*` (memory channels — note: per-channel on gfx942/950 → `TCC_EA0_*` / `TCC_EA1_*`), `GRBM_*` (graphics register bus master, the GPU-wide cycle/active counters), `GL2C_*` (legacy alias for L2 on some builds), and `CPC_*` / `CPF_*` (command processor).
+AMD's PMC namespace is partitioned by IP block: `SQ_*` (Shader Engine/Wave scheduler), `SQC_*` (scalar/instr cache), `TA_*` / `TD_*` (texture address/data, used by vector mem), `TCP_*` (vL1 — per-CU vector L1), `TCC_*` (L2 cache, per-channel), `TCC_EA0_*` (HBM "Effective Address" channel — **only `EA0` exists on gfx942/gfx950**; `TCC_EA1_*` does NOT exist on these gens), `GRBM_*` (graphics register bus master, the GPU-wide cycle/active counters), `GL2C_*` (legacy alias for L2 on some builds), and `CPC_*` / `CPF_*` (command processor).
 
 When in doubt, enumerate:
 
@@ -27,14 +27,14 @@ print('\n'.join(sorted(pd.read_csv('rpc_<tag>/pmc_perf.csv', nrows=1).columns)))
 
 | gfx906 / gfx908 / gfx90a (MI50 / MI100 / MI200) | gfx942 (MI300X) / gfx950 (MI355X) |
 |---|---|
-| `TCC_HIT_sum` (single L2 channel) | **`TCC_HIT[0..n]_sum`** — per-channel (multiple TCC instances) |
-| `TCC_EA_RDREQ_sum` | **`TCC_EA0_RDREQ_sum` + `TCC_EA1_RDREQ_sum`** (two memory channels per XCD on MI300X) |
-| `TCC_EA_RDREQ_32B_sum` | **`TCC_EA0_RDREQ_32B_sum` + `TCC_EA1_RDREQ_32B_sum`** |
-| `TCC_EA_WRREQ_sum` | **`TCC_EA0_WRREQ_sum` + `TCC_EA1_WRREQ_sum`** |
+| `TCC_HIT_sum` (single L2 channel) | **`TCC_HIT_sum`** — still the aggregate name; per-channel hit breakdown is via rocprof-compute, not a stable `TCC_HIT<i>_sum` PMC |
+| `TCC_EA_RDREQ_sum` | **`TCC_EA0_RDREQ_sum`** — single EA channel per XCD on gfx942/gfx950 (NO `TCC_EA1_*`) |
+| `TCC_EA_RDREQ_32B_sum` | **`TCC_EA0_RDREQ_32B_sum`** |
+| `TCC_EA_WRREQ_sum` | **`TCC_EA0_WRREQ_sum`** |
 | `TA_BUSY_avr` | **`TA_BUSY_avr_per_simd`** (or sum across SIMDs) |
 | `SQ_INSTS_MFMA` exists on gfx908+ | Same aggregate name; per-dtype detail moves to `SQ_INSTS_VALU_MFMA_MOPS_<DTYPE>` on gfx942+ (per-shape PMCs not stable across ROCm versions) |
 | `SQ_BUSY_CYCLES` (gfx9 family) | Same, but on MI300X read **`GRBM_GUI_ACTIVE`** for true GPU-wide active cycles (denominator) |
-| `SQ_INSTS_VALU_MFMA_MOPS_*` (no FP4/FP6/MXFP) | **gfx950 adds** FP4/FP6/MXFP-scaled MFMA dtype suffixes (exact names install-specific) |
+| `SQ_INSTS_VALU_MFMA_MOPS_*` (no F6F4/XF32) | **gfx950 adds** `SQ_INSTS_VALU_MFMA_MOPS_F6F4` (block-scaled FP4/FP6 family) and `SQ_INSTS_VALU_MFMA_MOPS_XF32`; verify the exact suffix list with `rocprofv3 -L \| grep MFMA` |
 | `SQ_WAVES` (total wavefronts) | Same name everywhere |
 
 ---
@@ -51,11 +51,12 @@ GPU_ID, Queue_ID, PID, TID
 Grid_Size, Workgroup_Size
 LDS_Per_Workgroup            # bytes
 Scratch_Per_Workitem         # bytes = register spill volume per work-item
-VGPRs                        # per-wave allocation
-SGPRs
-AGPRs                        # CDNA3+ accumulation registers (MFMA destination pool)
+Arch_VGPR                    # per-work-item architectural VGPR count (NOT "VGPRs")
+Accum_VGPR                   # per-work-item AGPR pool count on CDNA3+ (NOT "AGPRs")
+SGPR                         # per-wavefront SGPR (singular, NOT "SGPRs")
 Wave_Size                    # 64 on CDNA
-Start_Timestamp, End_Timestamp   # ns
+# NOTE: pmc_perf.csv does NOT include Start_Timestamp / End_Timestamp on rocprof-compute
+# in ROCm 7.x — use the kernel_trace.csv produced by `rocprofv3 --kernel-trace` for timing.
 ```
 
 ### Shader (SQ) — wave activity & instruction mix
@@ -87,36 +88,29 @@ SQ_ACTIVE_INST_VMEM             # VMEM active cycles (if exposed by this ROCm)
 
 ### Wait / stall reasons (SQ) — analog of NVIDIA `smsp__average_warps_issue_stalled_*`
 
-The set of `SQ_WAIT_*` counters has churned across ROCm releases. The names below have
-been observed on gfx942 / gfx950 with recent ROCm; treat anything not in this list as
-unverified and check `rocprofv3 -L | grep SQ_WAIT` on your install.
+**Only three `SQ_WAIT_*` PMCs exist on gfx942 / gfx950** (verified via `rocprofv3 -L`):
 
 ```
-SQ_WAIT_INST_VMEM               # waiting on vmem completion (load/store to HBM/L2/vL1)
-SQ_WAIT_INST_LDS                # waiting on LDS read/write completion (covers bank-conflict serialization)
-SQ_WAIT_INST_SMEM               # waiting on scalar memory
-SQ_WAIT_INST_FLAT               # waiting on flat addressing
-SQ_WAIT_INST_EXP                # export waits (mostly graphics, rare in compute)
-SQ_WAIT_INST_MISC               # misc waits
-SQ_WAIT_BARRIER                 # waiting at s_barrier (workgroup-wide sync)
-SQ_WAIT_VMCNT                   # waiting for vmcnt (outstanding vmem) to drain
-SQ_WAIT_LGKMCNT                 # waiting for lgkmcnt (LDS/GDS/scalar/const) to drain
-SQ_WAIT_EXPCNT                  # waiting for expcnt (export, mostly graphics)
-SQ_INST_LEVEL_VMEM              # outstanding vmem level (peak concurrency)
-SQ_INST_LEVEL_LDS               # outstanding LDS level
+SQ_WAIT_ANY                    # any wait state (broadest signal)
+SQ_WAIT_INST_ANY               # waiting on any instruction-side resource
+SQ_WAIT_INST_LDS               # LDS instruction issue stall (covers bank-conflict serialization)
+SQ_INST_LEVEL_LDS              # outstanding LDS level (peak concurrency)
 ```
 
-Wait categories that *do not* have a stable dedicated `SQ_WAIT_*` counter on gfx942/gfx950
-include scalar-ALU pipe occupancy, VALU pipe occupancy, scratch (= spill) traffic, and an
-LDS-specific "ANY" aggregate. Use rocprof-compute's section 2.1.13 derived totals instead
-of inventing counter names for those.
+The granular VMEM / SMEM / FLAT / BARRIER / VMCNT / LGKMCNT / EXPCNT / MISC categories
+seen in older gfx9 docs are **NOT exposed as PMC counters** on gfx942 / gfx950 — that
+classification comes ONLY from PC sampling's `Wait_Reason` enum
+(rocprofv3 `--pc-sampling-method host_trap` / `stochastic`).
+
+Use rocprof-compute's derived stall totals (see the wavefront-stall breakdown in the
+per-block dump) and the PC-sampling `Wait_Reason` aggregation for the categorical split.
 
 ### IPC / occupancy
 ```
 SQ_BUSY_CYCLES / GRBM_GUI_ACTIVE     # GPU-wide SQ busy ratio
 SQ_WAVES / GRBM_GUI_ACTIVE           # wave throughput
 SQ_INSTS / SQ_BUSY_CYCLES             # IPC across all SIMDs (per-SE — divide by # SEs for per-SIMD)
-SQ_ACCUM_PREV_HIRES                  # achieved occupancy (waves/SIMD/cycle) — populated by rocprof-compute §2.1.2
+SQ_ACCUM_PREV_HIRES                  # achieved occupancy (waves/SIMD/cycle) — populated by rocprof-compute wavefront block (-b 5)
 ```
 
 ### vL1 cache (TCP — per-CU vector L1)
@@ -136,54 +130,47 @@ TCP_VOLATILE_sum                      # volatile (uncached) accesses
 
 vL1 hit rate (computed): `1 - (TCP_TCC_READ_REQ_sum + TCP_TCC_WRITE_REQ_sum) / TCP_TOTAL_CACHE_ACCESSES_sum`
 
-### L2 cache (TCC — per-channel on MI300X/MI355X)
+### L2 cache (TCC — aggregate on MI300X / MI355X)
+
+Verified PMC names on gfx942 / gfx950 (`rocprofv3 -L | grep '^TCC_'`):
 ```
-TCC_HIT_sum                           # aggregate
-TCC_MISS_sum
-TCC_HIT[0..n]_sum                     # per-channel hits (n = # TCC channels on this XCD)
-TCC_REQ_sum
-TCC_REQ_READ_sum
-TCC_REQ_WRITE_sum
+TCC_HIT_sum                           # aggregate L2 hits
+TCC_MISS_sum                          # aggregate L2 misses
+TCC_REQ_sum                           # total L2 requests
 TCC_ATOMIC_sum                        # atomic ops at L2
-TCC_BUBBLE_sum
-TCC_NORMAL_WRITEBACK_sum
-TCC_ALL_TC_OP_WB_sum
-TCC_NC_REQ_sum                        # non-coherent
-TCC_UC_REQ_sum                        # uncached
-TCC_CC_REQ_sum                        # coherent
-TCC_RW_REQ_sum                        # read/write mix
 ```
+
+`TCC_REQ_READ_sum` / `TCC_REQ_WRITE_sum` / `TCC_BUBBLE_sum` / `TCC_NORMAL_WRITEBACK_sum` /
+`TCC_NC_REQ_sum` / `TCC_UC_REQ_sum` / `TCC_CC_REQ_sum` / `TCC_RW_REQ_sum` and per-channel
+`TCC_HIT<i>_sum` are **NOT in the verified gfx942/gfx950 set**; they were valid on older
+gfx releases. Always confirm with `rocprofv3 -L | grep '^TCC_'` on your install.
 
 L2 hit rate: `TCC_HIT_sum / (TCC_HIT_sum + TCC_MISS_sum)`
 
-### HBM / memory channel (TCC_EA — `EA0` / `EA1` per XCD on MI300X; enumerate with `rocprofv3 -L | grep TCC_EA` on your install — channel count and naming may differ on gfx950)
+### HBM / memory channel (TCC_EA0 — single EA channel per XCD on gfx942 / gfx950)
+
+**`TCC_EA1_*` does NOT exist on gfx942 or gfx950.** Older gfx906/gfx908 docs showing a
+two-channel `EA0 + EA1` formula do not apply. Enumerate with
+`rocprofv3 -L | grep TCC_EA` to confirm what your install exposes.
+
 ```
-TCC_EA0_RDREQ_sum                     # read requests issued to HBM channel 0
+TCC_EA0_RDREQ_sum                     # read requests issued to HBM
 TCC_EA0_RDREQ_32B_sum                 # 32B-granular read requests
 TCC_EA0_WRREQ_sum                     # writes
 TCC_EA0_WRREQ_64B_sum                 # 64B-granular writes
 TCC_EA0_RDREQ_DRAM_sum                # filtered to DRAM (excludes other agents)
 TCC_EA0_WRREQ_DRAM_sum
-TCC_EA1_RDREQ_sum                     # second HBM channel
-TCC_EA1_RDREQ_32B_sum
-TCC_EA1_WRREQ_sum
-TCC_EA1_WRREQ_64B_sum
-TCC_EA1_RDREQ_DRAM_sum
-TCC_EA1_WRREQ_DRAM_sum
 TCC_EA0_ATOMIC_sum
-TCC_EA1_ATOMIC_sum
 TCC_EA0_RDREQ_IO_sum                  # I/O (xGMI / PCIe) reads
-TCC_EA1_RDREQ_IO_sum
 TCC_EA0_WRREQ_IO_sum
-TCC_EA1_WRREQ_IO_sum
 ```
 
 Computed achieved HBM read BW (GB/s):
 ```
-(TCC_EA0_RDREQ_32B_sum + TCC_EA1_RDREQ_32B_sum) * 32 / kernel_duration_seconds / 1e9
+TCC_EA0_RDREQ_32B_sum * 32 / kernel_duration_seconds / 1e9
 ```
 
-Peak HBM BW: 5.3 TB/s on MI300X, 8.0 TB/s on MI355X (per-package; per-channel = peak / # channels).
+Peak HBM BW: 5.3 TB/s on MI300X (HBM3), 8.0 TB/s on MI355X (HBM3E).
 
 ### LDS (per-CU local data share)
 ```
@@ -202,16 +189,21 @@ The MFMA per-dtype counters on gfx942 / gfx950 use the prefix
 suffixes exposed depends on the ROCm version — enumerate with
 `rocprofv3 -L | grep -i MFMA`. The aggregate `SQ_INSTS_MFMA` is always available.
 
+Verified `SQ_INSTS_VALU_MFMA_MOPS_<DTYPE>` suffixes on gfx950 (`rocprofv3 -L | grep MFMA`):
+**F16, BF16, F32, F64, I8, F8, XF32, F6F4**.
+
 ```
 SQ_INSTS_MFMA                         # total MFMA issued (aggregate)
-SQ_INSTS_VALU_MFMA_MOPS_F16           # by source dtype (when exposed)
+SQ_INSTS_VALU_MFMA_MOPS_F16           # by source dtype
 SQ_INSTS_VALU_MFMA_MOPS_BF16
 SQ_INSTS_VALU_MFMA_MOPS_F32
-SQ_INSTS_VALU_MFMA_MOPS_F64           # CDNA3 only at full throughput; CDNA4 halved
+SQ_INSTS_VALU_MFMA_MOPS_F64           # CDNA3 full throughput; CDNA4 halved
 SQ_INSTS_VALU_MFMA_MOPS_I8
 SQ_INSTS_VALU_MFMA_MOPS_F8            # CDNA3 (OCP-FNUZ) / CDNA4 (OCP standard)
-# CDNA4 (gfx950) — block-scaled MX formats, exact suffixes are install-specific
-# `rocprofv3 -L | grep -i MXF` is the authoritative list on your build.
+SQ_INSTS_VALU_MFMA_MOPS_XF32          # CDNA4 — extended-FP32 MFMA
+SQ_INSTS_VALU_MFMA_MOPS_F6F4          # CDNA4 — block-scaled FP6/FP4 family
+# There are NO distinct `_F4` / `_F6` / `_MXFP4` / `_MXFP6` / `_MXFP8` PMC counters
+# on gfx950 — the block-scaled MX-style formats roll up into `_F6F4`.
 SQ_VALU_MFMA_BUSY_CYCLES              # cycles MFMA pipe was busy (proxy for "matrix-core busy")
 ```
 
@@ -247,33 +239,42 @@ SQ_WAVES_PER_CU                       # waves per CU (rocprof-compute synthesize
 SQ_BUSY_CYCLES_per_cu                 # — same
 ```
 
-rocprof-compute §2.1.23 ("Workgroup imbalance") gives you the per-CU breakdown without needing to do this manually.
+rocprof-compute's workgroup-balance breakdown gives you the per-CU view without
+computing it manually.
 
 ---
 
-## Rocprof-compute section IDs
+## Rocprof-compute block IDs
+
+The current rocprof-compute uses **top-level integer block IDs** with `-b <N>`. Use:
 
 ```bash
-rocprof-compute analyze --list-stats
+rocprof-compute analyze --list-stats                       # lists profiled KERNELS / dispatches
+rocprof-compute analyze --list-metrics gfx942              # lists metric / block IDs for MI300X
+rocprof-compute analyze --list-metrics gfx950              # lists metric / block IDs for MI355X
 ```
 
-Section ID map (MI300X / rocprof-compute ROCm 7.x; verify on your install):
+Verified top-level block IDs (rocprof-compute ROCm 7.x; ALWAYS confirm on your install with
+`--list-metrics <gfx_arch>`):
 
-| ID | Section | What it tells you |
-|---|---|---|
-| 2.1.0  | Launch Statistics             | Grid/workgroup, waves/CU, registers/wave, scratch, LDS |
-| 2.1.1  | Speed-of-Light (SoL)          | % of peak for compute, HBM, vL1, L2, scratch |
-| 2.1.2  | Wavefront Launch Stats        | Waves/wkg, achieved occupancy, register/LDS pressure |
-| 2.1.5  | Pipeline / instruction mix    | VALU / SALU / MFMA / VMEM / LDS instruction counts |
-| 2.1.10 | Compute Units — Compute Pipe  | VALU / SALU / matrix-core busy %, IPC, FMA |
-| 2.1.11 | Compute Units — Memory Pipe   | Bytes per wavefront (peak 256B coalesced), LDS bank conflicts |
-| 2.1.13 | Wavefront Stall Reasons       | WAIT_INST_VMEM, WAIT_INST_LDS, WAIT_INST_SMEM, WAIT_INST_FLAT, WAIT_BARRIER, WAIT_VMCNT, WAIT_LGKMCNT |
-| 2.1.15 | Memory — vL1 cache (TCP)      | Hit rate, sectors per request, coalescing |
-| 2.1.16 | Memory — L2 cache (TCC)       | Per-channel hit rate, atomics, bytes |
-| 2.1.17 | Memory — HBM (TCC_EA)         | Per-channel HBM read/write bytes, achieved BW |
-| 2.1.20 | Roofline                       | Compute vs memory roofline, kernel position |
-| 2.1.22 | Scratch / Spill                | Scratch reads/writes (= register spill on AMD) |
-| 2.1.23 | Workgroup imbalance           | Per-CU active-cycle distribution |
+| ID | Block | What it tells you |
+|---:|---|---|
+|  2 | Speed-of-Light (SoL)          | % of peak for compute, HBM, vL1, L2, scratch |
+|  5 | CS / Wavefront                | Waves/wkg, achieved occupancy, wavefront launch |
+|  7 | Wavefront Launch Stats        | Grid/workgroup, registers, LDS, occupancy limiter |
+| 10 | Compute Pipe                  | VALU / SALU / matrix-core busy %, IPC, FMA |
+| 11 | Instruction Mix               | VALU / SALU / MFMA / VMEM / LDS / FLAT instruction counts |
+| 12 | Pipe SoL                      | Per-pipe Speed-of-Light |
+| 13 | Pipe Stats                    | Per-pipe stall / activity stats |
+| 14 | Cache (overview)              | Cache summary across vL1 / L2 |
+| 15 | L1D Cache (TCP)               | vL1 hit rate, sectors per request, bytes per wave |
+| 16 | L2 Cache (TCC)                | L2 hit rate, atomics, bytes |
+| 17 | L2 - Fabric / HBM (TCC_EA)    | HBM read/write bytes, achieved BW |
+| 18 | Scratch / Spill               | Scratch reads/writes (= register spill on AMD) |
+| 21 | Misc                          | Other derived metrics |
+
+The dotted-section IDs (`2.1.0`, `2.1.13`, `2.1.23` etc.) from older Omniperf docs are
+not how current rocprof-compute is invoked — use the integer `-b` flag.
 
 ---
 
@@ -281,22 +282,26 @@ Section ID map (MI300X / rocprof-compute ROCm 7.x; verify on your install):
 
 For users coming from NCU, the wait/stall taxonomy maps roughly as:
 
-| NVIDIA (NCU) `smsp__average_warps_issue_stalled_<X>` | AMD (SQ) | Notes |
+> **AMD-side note:** the granular `WAIT_*` categories below come from **PC sampling's
+> `Wait_Reason` enum** on gfx942 / gfx950 — they are NOT PMC counters (only
+> `SQ_WAIT_ANY`, `SQ_WAIT_INST_ANY`, `SQ_WAIT_INST_LDS` exist as PMCs).
+
+| NVIDIA (NCU) `smsp__average_warps_issue_stalled_<X>` | AMD (PC-sampling `Wait_Reason` or PMC where noted) | Notes |
 |---|---|---|
-| `long_scoreboard` | `SQ_WAIT_INST_VMEM` / `SQ_WAIT_VMCNT` | Global / texture memory load waits |
-| `short_scoreboard` | `SQ_WAIT_INST_LDS` / `SQ_WAIT_LGKMCNT` | Shared-mem / constant / scalar memory waits |
-| `barrier` | `SQ_WAIT_BARRIER` | `__syncthreads` / `s_barrier` |
-| `math_pipe_throttle` | (no direct counter — derive from `SQ_INSTS_VALU / SQ_BUSY_CYCLES` ratio) | VALU pipe contention |
+| `long_scoreboard` | `WAIT_INST_VMEM` / `WAIT_VMCNT` (PC sampling) | Global / texture memory load waits |
+| `short_scoreboard` | `WAIT_INST_LDS` (PC sampling) or PMC `SQ_WAIT_INST_LDS`; `WAIT_LGKMCNT` | Shared-mem / constant / scalar memory waits |
+| `barrier` | `WAIT_BARRIER` (PC sampling) | `__syncthreads` / `s_barrier` |
+| `math_pipe_throttle` | (no direct signal — derive from `SQ_INSTS_VALU / SQ_BUSY_CYCLES` ratio) | VALU pipe contention |
 | `mio_throttle` | LSU pressure (TCP saturated; back-pressure visible in `TCP_PENDING_STALL_CYCLES_sum`) | MIO unit is NV-specific |
 | `lg_throttle` | TCP saturation (back-pressure visible in `TCP_PENDING_STALL_CYCLES_sum`) | "load/global throttle" |
 | `tex_throttle` | TA/TD pressure — `TA_BUSY_*` saturated | Texture pipe in NV terms; image pipe on AMD |
-| `wait` | `SQ_WAIT_INST_MISC` | Misc fixed-latency waits |
-| `membar` | `SQ_WAIT_VMCNT` after a fence | AMD uses explicit vmcnt/lgkmcnt drains |
-| `dispatch_stall` | `SQ_WAIT_INST_MISC` (proxy) | Issue-slot blocked |
-| `drain` | `SQ_WAIT_VMCNT` / `SQ_WAIT_LGKMCNT` at kernel end | Outstanding ops drain |
-| `no_instruction` | I-cache miss — `SQC_*` counters | Scalar/instr cache miss |
+| `wait` | `OTHER` (PC sampling) | Misc fixed-latency waits |
+| `membar` | `WAIT_VMCNT` after a fence (PC sampling) | AMD uses explicit vmcnt/lgkmcnt drains |
+| `dispatch_stall` | `OTHER` (PC sampling, proxy) | Issue-slot blocked |
+| `drain` | `WAIT_VMCNT` / `WAIT_LGKMCNT` at kernel end (PC sampling) | Outstanding ops drain |
+| `no_instruction` | `NO_INST` (PC sampling); I-cache miss — `SQC_*` counters | Scalar/instr cache miss |
 | `branch_resolving` | `SQ_INSTS_BRANCH` + scalar branch wait | Conditional branch resolution |
-| `selected` (productive) | `SQ_ACTIVE_INST_VALU` / `SQ_ACTIVE_INST_VMEM` | Actually issuing |
+| `selected` (productive) | `ISSUED` (PC sampling); `SQ_INSTS_VALU` / `SQ_INSTS_VMEM_*` | Actually issuing |
 
 This is approximate — AMD and NVIDIA model the front-end stall categories differently. Use it as a sanity check, not a 1:1 translation.
 
@@ -327,9 +332,9 @@ print('\n'.join(sorted(c for c in cols if c.startswith('SQ_'))))
 1. **Counter exists in `rocprofv3 -L` but column missing in CSV**: the counter wasn't *collected* in this PMC group. Rerun with a different `--section` or `--pmc` list.
 2. **Counter value is `0`**: either the hardware feature reports zero (e.g., no MFMA activity), or the counter is conditional on a feature flag (e.g., FP4 counters require gfx950).
 3. **`_sum` vs `_avr` vs `_max`**: counter suffix indicates aggregation. `_sum` = total across all CUs / channels / SEs; `_avr` = per-instance average; `_max` = max instance value. Don't re-sum a `_sum`.
-4. **`TCC_EA_*` (no number) on MI300X**: that's the gfx906/908 spelling — on gfx942 you want `TCC_EA0_*` and `TCC_EA1_*` (per channel) and you'll have to sum them yourself.
-5. **MFMA FP4 / FP6 / MXFP per-dtype counters missing**: gfx950 only. ROCm 6.x will not enumerate them; ROCm 7+ required for MI355X. Always check `rocprofv3 -L | grep -i MFMA` for the exact suffixes your build exposes.
-6. **`AGPRs` column reports 0** on a kernel you expect to use MFMA: either the compiler chose to spill MFMA accumulators into VGPRs (lower performance), or MFMA isn't being emitted — check ISA with `llvm-objdump -d`.
+4. **`TCC_EA_*` (no number) on MI300X**: that's the gfx906/908 spelling — on gfx942/gfx950 use `TCC_EA0_*`. There is **no** `TCC_EA1_*` on these gens, so don't sum two channels.
+5. **MFMA `F6F4` / `XF32` per-dtype counters missing**: gfx950 only. ROCm 6.x will not enumerate them; ROCm 7+ required for MI355X. Always check `rocprofv3 -L | grep -i MFMA` for the exact suffixes your build exposes (no `_F4` / `_F6` / `_MXFP4` / `_MXFP6` / `_MXFP8` counters exist — they roll up into `_F6F4`).
+6. **`Accum_VGPR` column reports 0** on a kernel you expect to use MFMA: either the compiler chose to spill MFMA accumulators into VGPRs (lower performance), or MFMA isn't being emitted — check ISA with `llvm-objdump -d`. The column is named `Accum_VGPR`, not `AGPRs`.
 7. **MI300A (APU variant of gfx942)** shares the gfx942 counter set with MI300X discrete, but `TCC_EA*_IO_*` traffic includes CPU↔GPU coherent memory.
-8. **Per-XCD attribution**: rocprof-compute's "Workgroup imbalance" section aggregates per CU, but MI300X has 8 XCDs each with 38 CUs. To see per-XCD load you have to group CUs by index range (CU 0-37 = XCD0, 38-75 = XCD1, …) or rely on §2.1.23's automatic grouping.
-9. **CPX/NPS4 partitioning** changes the visible CU count and channel layout — `sysinfo.csv` records the partition state at profile time. Profile with the same partition setup as production.
+8. **Per-XCD attribution**: rocprof-compute's workgroup-balance breakdown aggregates per CU, but MI300X has 8 XCDs each with 38 CUs (MI355X: 8 × 32). To see per-XCD load you have to group CUs by index range (CU 0-37 = XCD0, 38-75 = XCD1, …) or rely on the per-CU active-cycle output and grouping by `cu // (cus_per_xcd)`.
+9. **CPX/NPS4 partitioning** changes the visible CU count and channel layout — `sysinfo.csv` (wide single-row format on current rocprof-compute) records the partition state at profile time. Profile with the same partition setup as production.

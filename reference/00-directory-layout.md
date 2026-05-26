@@ -73,13 +73,13 @@ profile/<run_name>/
 ├── reports/
 │   ├── trace_<tag1>/               ← rocprofv3 kernel-trace output dir (.csv / .json / .pftrace / .db)
 │   ├── trace_<tag2>/
-│   ├── rpc_<tag1>/                 ← rocprof-compute "profile" output dir (flat layout)
-│   │   ├── pmc_perf.csv            ← all collected PMCs, one row per dispatch
-│   │   ├── timestamps.csv
-│   │   ├── sysinfo.csv
-│   │   ├── roofline.csv            ← only when --roofline was passed
+│   ├── rpc_<tag1>/                 ← rocprof-compute "profile" output dir
+│   │   ├── pmc_perf.csv            ← merged PMCs (one row per dispatch × PMC group)
+│   │   ├── pmc_kernel_top.csv      ← top-K kernels by dispatch count
+│   │   ├── sysinfo.csv             ← wide single-row sysinfo (NOT param/value)
+│   │   ├── roofline.pdf            ← PDF when roofline ran (default-on; --no-roof to skip)
 │   │   ├── profiling_config.yaml
-│   │   └── perfmon/                ← per-PMC-group .txt/.yaml inputs (not analysis data)
+│   │   └── out/pmc_<N>/<host>/<pid>_*.csv   ← raw per-PMC-group passes
 │   ├── rpc_<tag2>/
 │   ├── att_<tag1>/                 ← rocprofv3 --att output dir (JSON traces per CU)
 │   ├── att_<tag2>/
@@ -103,7 +103,7 @@ Notes:
 - `<tag>` is the per-workload / per-dispatch-path label, e.g. `path_a_shapeA`, `path_b_shapeB`. Pick tags that are short and name the representative workload, not the file UUID.
 - If you profile only one tag, you can omit the tag suffix from filenames. But as soon as you profile a second, backfill the tag to avoid ambiguity.
 - Keep `analysis/analyze_reports.py` as a per-run copy (pointing at the run-local `reports/`), not a symlink into the repo. This way the run is self-contained and archivable.
-- **rocprof-compute writes a flat directory.** All PMCs land in `pmc_perf.csv`; there is no `SoC/` subdir in current releases. When `-p <path>` is passed, files land directly under `<path>/`; when omitted, output defaults to `./workloads/<name>/<gpu_model>/`. Keep the whole dir — the helpers and the GUI walk the flat layout.
+- **rocprof-compute writes a partly flat directory.** The merged `pmc_perf.csv`, `pmc_kernel_top.csv`, `sysinfo.csv`, `roofline.pdf`, and `profiling_config.yaml` land directly under `<path>/`; the raw per-PMC-group CSVs land under `<path>/out/pmc_<N>/<hostname>/<pid>_*.csv`. When `-p <path>` is passed, this is rooted at `<path>/`; when omitted, output defaults to `./workloads/<name>/` (no `<gpu_model>` subdir on current rocprof-compute). Keep the whole tree — the helpers and the GUI walk it together.
 - **rocprofv3** in ROCm 7+ defaults to a SQLite `.db` (the `rocpd` schema) plus CSVs. In ROCm 6.x it defaulted to CSVs only. Keep whatever rocprofv3 produced — pandas + sqlite3 handle both.
 
 ---
@@ -178,8 +178,8 @@ rocprofv3 --kernel-trace --hip-trace --hsa-trace \
 
 # rocprof-compute section perf (analog of ncu --set full)
 # Flag is -k / --kernel (substring match), not --kernel-name.
+# Roofline is ON by default; pass `--no-roof` to skip. There is NO `--roofline` flag.
 rocprof-compute profile -n <run_name>_<tag> \
-    --roofline \
     -k "my_kernel" \
     -p "$PROFILE_RUN_DIR/reports/rpc_<tag>" \
     -- "$PROFILE_RUN_DIR/harness/kernel_harness" [args]
@@ -194,7 +194,7 @@ rocprofv3 --att --att-target-cu 0 \
 python3 analyze_reports.py --run-dir "$PROFILE_RUN_DIR" --tag <tag>
 ```
 
-All of the helper scripts in `../helpers/` accept a `--run-dir` argument that defaults to the current directory, so you can either `cd $PROFILE_RUN_DIR && python3 ../path/to/analyze_reports.py` or pass the path explicitly.
+All of the helper scripts in `../helpers/` accept an explicit `--run-dir` (or equivalent path) argument. Pass it explicitly rather than relying on cwd — the scripts assume the standard run layout above and need to find both `reports/` and `analysis/` relative to that root.
 
 ---
 

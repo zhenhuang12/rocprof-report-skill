@@ -30,7 +30,7 @@ If you are coming from NVIDIA, the most important mental adjustments are:
 | L2 (TCC) | per-XCD, 4 MB | per-XCD, 4 MB |
 | **Infinity Cache (MALL)** | **256 MB shared across XCDs** | shared with CPU |
 | HBM | 192 GB HBM3 @ 5.3 TB/s | 128 GB unified |
-| Memory channels | 8 HBM3 stacks; 2 channels visible per XCD (`TCC_EA0`, `TCC_EA1`) | unified |
+| Memory channels | 8 HBM3 stacks; on gfx942 only `TCC_EA0_*` is exposed in PMC (single EA channel per XCD — NO `TCC_EA1_*`; the older two-channel form was gfx906/gfx908) | unified |
 | Peak FP64 (MFMA) | ~163 TFLOPS | ~122 TFLOPS |
 | Peak BF16 (MFMA) | ~1307 TFLOPS dense | ~980 TFLOPS |
 | Peak FP8 (MFMA) | ~2614 TFLOPS dense (OCP-FNUZ) | ~1960 TFLOPS |
@@ -76,7 +76,7 @@ If you are coming from NVIDIA, the most important mental adjustments are:
   └──────────────────────────────────────┘
 ```
 
-Each XCD has its own L2 (TCC) and the L2-to-HBM EA path has 2 channels per XCD (`TCC_EA0_*`, `TCC_EA1_*`). When you read about "the per-channel HBM BW", that's per-EA.
+Each XCD has its own L2 (TCC) and the L2-to-HBM EA path is exposed in PMC as a single `TCC_EA0_*` counter family per XCD on gfx942 / gfx950 (the older `TCC_EA1_*` counters from gfx906 / gfx908 do **not** exist here). When you read about "per-channel HBM BW", that's per-EA0.
 
 In **SPX (Single Partition)** mode, all 304 CUs see one logical GPU and one HBM address space. In **CPX (8 partitions)** mode, each XCD is its own logical GPU with 38 CUs and ~24 GB HBM. **NPS** controls memory interleaving: NPS1 = all stacks interleaved; NPS4 = each pair of stacks bound to a quadrant.
 
@@ -256,7 +256,7 @@ LDS atomics use the `ds_*` instruction family (`ds_add_u32`, `ds_add_rtn_u32`, `
   LDS (per-CU, 1-2 cycles, 128 B/cycle peak)
        │
        ▼
-  vL1 / TCP (per-CU, ~16-32 KB, 4-8 cycles)
+  vL1 / TCP (per-CU, 32 KB on gfx942/gfx950, 4-8 cycles)
        │
        ▼
   L2 / TCC   (per-XCD, ~4 MB, 30-50 cycles)
@@ -289,32 +289,27 @@ Fix uncoalesced reads by **transposing to LDS first**: each lane reads its own c
 
 ### Per-channel HBM balance
 
-On MI300X, `TCC_EA0_*` and `TCC_EA1_*` should each see roughly half the traffic. A 90/10 split usually means an address-stride bug (your kernel hammers one DRAM channel). Fix by changing the address-to-channel mapping (typically: increment outer loop index by `gridDim.x * blockDim.x` instead of `1`).
+On gfx942 / gfx950, PMC only exposes a single `TCC_EA0_*` family per XCD (no `TCC_EA1_*`). Per-XCD balance comes from comparing `TCC_EA0_*` across XCDs (`rocprofv3` reports each XCD's counter separately when collected). A heavily skewed per-XCD distribution usually means an address-stride bug (your kernel hammers one DRAM stack). Fix by changing the address-to-channel mapping (typically: increment outer loop index by `gridDim.x * blockDim.x` instead of `1`).
 
 ---
 
-## Stalls — what the SQ_WAIT_* counters mean
+## Stalls — what wait reasons mean (and where they actually come from)
 
-When a wave can't issue an instruction, the SQ counter for the reason it's waiting increments. These map to source-line via PC sampling / ATT. The counters that have been observed on gfx942 / gfx950 with recent ROCm are:
+On gfx942 / gfx950, only **three** `SQ_WAIT_*` PMC counters exist as hardware counters: `SQ_WAIT_ANY`, `SQ_WAIT_INST_ANY`, and `SQ_WAIT_INST_LDS` (verify with `rocprofv3 -L | grep SQ_WAIT`). The finer-grained wait-reason classification (VMEM / SMEM / FLAT / BARRIER / VMCNT / LGKMCNT / EXPCNT) is **not** exposed as PMC — it lives only in PC sampling's `Wait_Reason` enum (`rocprofv3 --pc-sampling-method host_trap --pc-sampling-unit time`) and in ATT records.
 
-| Counter | Wait reason | Most common cause |
+| Wait reason (PC sampling `Wait_Reason`) | Meaning | Most common cause |
 |---|---|---|
-| `SQ_WAIT_INST_VMEM` | vmem op in flight | Outstanding global load — increase ILP, prefetch with `global_load_lds`, fuse loads |
-| `SQ_WAIT_INST_LDS` | LDS op in flight (covers bank-conflict serialization) | LDS read latency, bank conflicts, or LDS pressure |
-| `SQ_WAIT_INST_SMEM` | scalar-memory op in flight | Constant cache / kernarg latency |
-| `SQ_WAIT_INST_FLAT` | flat-addressing op in flight | Generic-addressing memory access |
-| `SQ_WAIT_INST_EXP` | export in flight | Mostly graphics; rare in compute |
-| `SQ_WAIT_INST_MISC` | misc fixed-latency wait | — |
-| `SQ_WAIT_BARRIER` | at `s_barrier` | Workgroup-wide sync — usually fundamental, but check if you can split barrier into halves |
-| `SQ_WAIT_VMCNT` | vmcnt > 0 | Drain outstanding vmem before continuing — usually from explicit `s_waitcnt vmcnt(0)` or mem ordering |
-| `SQ_WAIT_LGKMCNT` | lgkmcnt > 0 | Drain LDS/GDS/scalar/const before continuing |
+| `WAIT_INST_VMEM` | vmem op in flight | Outstanding global load — increase ILP, prefetch with `global_load_lds`, fuse loads |
+| `WAIT_INST_LDS` (also `SQ_WAIT_INST_LDS` PMC) | LDS op in flight (covers bank-conflict serialization) | LDS read latency, bank conflicts, or LDS pressure |
+| `WAIT_INST_SMEM` | scalar-memory op in flight | Constant cache / kernarg latency |
+| `WAIT_INST_FLAT` | flat-addressing op in flight | Generic-addressing memory access |
+| `WAIT_BARRIER` | at `s_barrier` | Workgroup-wide sync — usually fundamental, but check if you can split barrier into halves |
+| `WAIT_VMCNT` | vmcnt > 0 | Drain outstanding vmem before continuing — usually from explicit `s_waitcnt vmcnt(0)` or mem ordering |
+| `WAIT_LGKMCNT` | lgkmcnt > 0 | Drain LDS/GDS/scalar/const before continuing |
 
-Scratch (= register spill) traffic does **not** have a stable dedicated `SQ_WAIT_*` counter on
-gfx942/gfx950 — diagnose it via `Scratch_Per_Workitem > 0` in launch info and
-rocprof-compute section 2.1.22. Always verify the exact set on your install with
-`rocprofv3 -L | grep SQ_WAIT`.
+Scratch (= register spill) traffic does **not** have a dedicated wait-reason — diagnose it via `Scratch_Per_Workitem > 0` in launch info plus rocprof-compute's compute-pipeline block (`-b 11`). Always verify the exact wait-reason enum set on your install with `rocprofv3 -L`.
 
-`SQ_WAIT_INST_VMEM > 30%` is usually the #1 bottleneck in a non-trivial kernel. Treatments, in order:
+A PC-sampling `WAIT_INST_VMEM` share above ~30% of samples is usually the #1 bottleneck in a non-trivial kernel. Treatments, in order:
 
 1. **Reduce traffic** — recompute, fuse, exploit symmetry, or use lower precision (FP16/BF16/FP8/FP4 on supported gens).
 2. **Hide latency with ILP** — load 4 or 8 cachelines ahead of compute (double/quad-buffer).
@@ -436,8 +431,8 @@ These are the patterns that consistently produce well-performing CDNA kernels �
 - Training and large single-tenant inference want SPX/NPS1.
 - Profile in production partition.
 
-### 13. Watch per-channel HBM balance
-- `TCC_EA0_*` and `TCC_EA1_*` should be balanced. A skew means a stride bug.
+### 13. Watch per-XCD HBM balance
+- On gfx942 / gfx950, PMC exposes only `TCC_EA0_*` per XCD (no `TCC_EA1_*`). Per-XCD `TCC_EA0_*` values should be balanced; a skew means a stride bug.
 
 ### 14. Use FP8 / FP4 / MXFP where supported
 - CDNA3: FP8 (OCP-FNUZ) — 2× peak vs BF16.

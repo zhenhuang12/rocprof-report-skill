@@ -25,36 +25,49 @@ The helpers degrade gracefully if `rocpd` isn't importable — they fall back to
 `rocprof-compute profile -p <dir>` writes a directory; key files:
 
 ```
-rpc_<tag>/                ← when you pass `-p <dir>`, files land flat under it
+rpc_<tag>/                ← when you pass `-p <dir>`, files land FLAT under it
 ├── pmc_perf.csv          ← all collected PMCs land here, one row per dispatch
-├── timestamps.csv        ← per-dispatch start/end ns + kernel name + grid/block
-├── sysinfo.csv           ← gfx arch, ROCm version, CU count, etc.
-├── roofline.csv          ← present if --roofline was used
+├── sysinfo.csv           ← wide single-row: gfx arch, ROCm version, CU count, partition, etc.
+├── log.txt               ← rocprof-compute invocation log
 ├── profiling_config.yaml ← captured invocation config
-└── perfmon/              ← per-PMC-group .txt/.yaml input files (not analysis data)
+├── perfmon/              ← per-PMC-group .txt/.yaml input files (not analysis data)
+└── out/pmc_<N>/<host>/<pid>_{kernel_trace,counter_collection,agent_info}.csv
+                           ← raw per-pass dumps before merge
 ```
 
-Note: current rocprof-compute releases do **not** create a `SoC/` subdir under the profile dir — every counter lives in `pmc_perf.csv`. When `-p` is omitted, output defaults to `./workloads/<name>/<gpu_model>/` instead of being flat under the cwd.
+Notes:
+- There is **no `timestamps.csv`** in current rocprof-compute. Per-kernel wall-clock
+  duration is in `pmc_perf.csv` columns and in rocprofv3's `kernel_trace.csv` (run
+  a separate `rocprofv3 --kernel-trace -f csv -d <path>`).
+- There is **no top-level `roofline.csv`**. When roofline runs, the artifact is a PDF.
+- There is no `SoC/` subdir — every counter lives in `pmc_perf.csv`.
+- When `-p` is omitted, output defaults to `<cwd>/workloads/<name>/` (no `<gpu_model>/`
+  injection in current 7.x).
 
 ```python
-import pandas as pd
+import os, pandas as pd
 from pathlib import Path
 
-RPC_DIR = Path("$PROFILE_RUN_DIR/reports/rpc_<tag>".replace("$PROFILE_RUN_DIR", "/abs/path/profile/myrun"))
+RUN = os.environ["PROFILE_RUN_DIR"]
+RPC_DIR = Path(f"{RUN}/reports/rpc_<tag>")
 
 pmc = pd.read_csv(RPC_DIR / "pmc_perf.csv")
-ts  = pd.read_csv(RPC_DIR / "timestamps.csv")
 
-# Filter to the kernel(s) of interest
-mask = ts["Kernel_Name"].str.contains("my_kernel", regex=True)
-ts_k  = ts[mask]
-pmc_k = pmc[pmc["Dispatch_ID"].isin(ts_k["Dispatch_ID"])]
+# Filter to the kernel(s) of interest — Kernel_Name lives in pmc_perf.csv directly.
+mask = pmc["Kernel_Name"].astype(str).str.contains("my_kernel", regex=True)
+pmc_k = pmc[mask]
+print(f"Found {len(pmc_k)} dispatch(es) of my_kernel")
 
-print(f"Found {len(ts_k)} dispatch(es) of my_kernel")
-print(f"Total runtime: {(ts_k['End_Timestamp'] - ts_k['Start_Timestamp']).sum() / 1e3:.2f} µs")
+# For wall-clock durations, parse rocprofv3 kernel_trace.csv (has Start/End_Timestamp).
+# rocprof-compute profile no longer emits its own timestamps.csv.
+ktrace_glob = list(Path(f"{RUN}/reports/trace_<tag>").rglob("*_kernel_trace.csv"))
+if ktrace_glob:
+    kt = pd.concat([pd.read_csv(p) for p in ktrace_glob], ignore_index=True)
+    kt_k = kt[kt["Kernel_Name"].astype(str).str.contains("my_kernel", regex=True)]
+    print(f"Total runtime: {(kt_k['End_Timestamp'] - kt_k['Start_Timestamp']).sum() / 1e3:.2f} µs")
 ```
 
-`pmc_perf.csv` columns vary by ROCm release — confirm with `pmc.columns.tolist()`. Common: `Dispatch_ID, Kernel_Name, GPU_ID, Queue_ID, PID, TID, Grid_Size, Workgroup_Size, LDS_Per_Workgroup, Scratch_Per_Workitem, VGPRs, SGPRs, Wave_Size, Start_Timestamp, End_Timestamp` + each PMC counter as its own column.
+`pmc_perf.csv` columns vary by ROCm release — confirm with `pmc.columns.tolist()`. Verified launch columns: `Dispatch_ID, Grid_Size, Workgroup_Size, LDS_Per_Workgroup, Scratch_Per_Workitem, Arch_VGPR, Accum_VGPR, SGPR, Wave_Size, Kernel_Name, Kernel_ID, Correlation_ID` + each PMC counter as its own column. **There are no `VGPRs`/`SGPRs`/`AGPRs` plural columns and no `Start_Timestamp`/`End_Timestamp` columns** — use `Arch_VGPR`/`Accum_VGPR`/`SGPR` (singular) and read durations from `kernel_trace.csv`.
 
 ---
 
@@ -105,9 +118,9 @@ rocprof-compute profile -n <name> --timeseries-sampling-rate 1ms \
 Then:
 
 ```python
-import pandas as pd
-
-ts = pd.read_csv("$PROFILE_RUN_DIR/reports/rpc_ts_<tag>/pmc_perf_timeseries.csv")
+import os, pandas as pd
+RUN = os.environ["PROFILE_RUN_DIR"]
+ts = pd.read_csv(f"{RUN}/reports/rpc_ts_<tag>/pmc_perf_timeseries.csv")
 # Columns include: Sample_Time_ns, plus each counter as a column
 import matplotlib  # or use the ASCII plotter in helpers/plot_timeline.py
 ```
@@ -115,8 +128,11 @@ import matplotlib  # or use the ASCII plotter in helpers/plot_timeline.py
 For PC-sampling / ATT-style per-PC data (the AMD analog of NVIDIA's per-correlation-ID per-PC counts) you read **PC-sampling CSV** or **ATT JSON**:
 
 ```python
-# PC sampling
-pcs = pd.read_csv("$PROFILE_RUN_DIR/reports/pcsamp_<tag>/pc_sampling_host_trap_v0.csv")
+# PC sampling — filename includes pid/timestamp/method, glob to find it.
+import os, glob, pandas as pd
+RUN = os.environ["PROFILE_RUN_DIR"]
+csvs = glob.glob(f"{RUN}/reports/pcsamp_<tag>/**/pc_sampling_*.csv", recursive=True)
+pcs = pd.concat([pd.read_csv(p) for p in csvs], ignore_index=True)
 # Columns: Dispatch_ID, Sample_Time_ns, Instruction_Address, Source, Instruction_Comment, Wait_Reason, Sample_Count, ...
 hot = (pcs.groupby(["Source", "Wait_Reason"])["Sample_Count"]
           .sum().sort_values(ascending=False).head(20))
@@ -150,10 +166,13 @@ print(per_source_line(pcs, wait_reason="WAIT_INST_VMEM"))
 
 ROCm 7+ rocprofv3 defaults to a single `.db` per run, using the public `rocpd` schema. Tables include `agents`, `kernel_dispatch`, `hsa_api`, `hip_api`, `memory_copy`, `pmc_sample`, `pc_sample_host_trap`, ...
 
-```python
-import sqlite3, pandas as pd
+**Primary path — raw `sqlite3`** (works on any ROCm 7.x install without extra packages):
 
-con = sqlite3.connect("$PROFILE_RUN_DIR/reports/trace_<tag>/<run>.db")
+```python
+import os, sqlite3, pandas as pd
+RUN = os.environ["PROFILE_RUN_DIR"]
+
+con = sqlite3.connect(f"{RUN}/reports/trace_<tag>/<run>.db")
 
 # Kernel durations
 ker = pd.read_sql("""
@@ -172,10 +191,11 @@ print(pd.read_sql("SELECT name FROM sqlite_master WHERE type='table'", con))
 print(pd.read_sql("PRAGMA table_info(kernel_dispatch)", con))
 ```
 
-Or, if `rocpd` (the Python helper) is installed:
+If your install ships the `rocpd` python helper (NOT guaranteed — it's missing from
+some ROCm 7.2 containers), it can be more ergonomic than raw sqlite3:
 
 ```python
-import rocpd
+import rocpd  # ImportError-prone; fall back to sqlite3 above if missing
 with rocpd.open("path/to/file.db") as db:
     df = db.kernel_dispatches(name_filter="my_kernel")
 ```
@@ -209,17 +229,25 @@ This is how I built [`08-mi300x-mi355x-counter-names.md`](08-mi300x-mi355x-count
 ## Comparing two reports programmatically
 
 ```python
-def compare(rpc_dir_1, rpc_dir_2, kernel_regex, counters):
-    def load(d):
-        ts  = pd.read_csv(Path(d) / "timestamps.csv")
+import os, glob, pandas as pd
+from pathlib import Path
+RUN = os.environ["PROFILE_RUN_DIR"]
+
+def compare(rpc_dir_1, rpc_dir_2, kernel_regex, counters, trace_dir_1=None, trace_dir_2=None):
+    def load_rpc(d):
         pmc = pd.read_csv(Path(d) / "pmc_perf.csv")
-        sel = ts[ts["Kernel_Name"].str.contains(kernel_regex, regex=True)]
-        return pmc[pmc["Dispatch_ID"].isin(sel["Dispatch_ID"])], sel
-    p1, t1 = load(rpc_dir_1)
-    p2, t2 = load(rpc_dir_2)
+        return pmc[pmc["Kernel_Name"].astype(str).str.contains(kernel_regex, regex=True)]
+    def load_trace_duration(trace_dir):
+        if not trace_dir:
+            return 0.0
+        csvs = glob.glob(f"{trace_dir}/**/*_kernel_trace.csv", recursive=True)
+        if not csvs: return 0.0
+        kt = pd.concat([pd.read_csv(p) for p in csvs], ignore_index=True)
+        kt = kt[kt["Kernel_Name"].astype(str).str.contains(kernel_regex, regex=True)]
+        return float((kt["End_Timestamp"] - kt["Start_Timestamp"]).sum())
+    p1 = load_rpc(rpc_dir_1); p2 = load_rpc(rpc_dir_2)
+    dur1 = load_trace_duration(trace_dir_1); dur2 = load_trace_duration(trace_dir_2)
     print(f"{'Counter':<45} {'v1':>15} {'v2':>15} {'change':>10}")
-    dur1 = (t1.End_Timestamp - t1.Start_Timestamp).sum()
-    dur2 = (t2.End_Timestamp - t2.Start_Timestamp).sum()
     for c in ["__duration__"] + counters:
         if c == "__duration__":
             v1, v2 = dur1, dur2
@@ -233,14 +261,16 @@ def compare(rpc_dir_1, rpc_dir_2, kernel_regex, counters):
             print(f"{c:<45} {str(v1):>15} {str(v2):>15}")
 
 compare(
-    "$PROFILE_RUN_DIR/reports/rpc_v1",
-    "$PROFILE_RUN_DIR/reports/rpc_v2",
+    f"{RUN}/reports/rpc_v1",
+    f"{RUN}/reports/rpc_v2",
     kernel_regex="my_kernel",
     counters=[
         "SQ_WAVES", "SQ_INSTS_VALU", "SQ_INSTS_MFMA",
-        "SQ_WAIT_INST_VMEM", "SQ_WAIT_INST_LDS",
+        "SQ_WAIT_INST_ANY", "SQ_WAIT_INST_LDS",
         "TCC_EA0_RDREQ_sum", "GRBM_GUI_ACTIVE",
     ],
+    trace_dir_1=f"{RUN}/reports/trace_v1",
+    trace_dir_2=f"{RUN}/reports/trace_v2",
 )
 ```
 
@@ -251,12 +281,26 @@ compare(
 rocprof-compute's section reports are designed as human-readable tables, but the underlying CSVs are right there. The "speed-of-light" gaps in section 2.1.1 are derived from `pmc_perf.csv` + the roofline benchmarks; you can recompute them in Python:
 
 ```python
-# Achieved HBM read BW vs peak (peak from sysinfo.csv if --roofline ran)
+# sysinfo.csv is a WIDE single-row format (not param/value pairs). Inspect with
+# `sysinfo.columns.tolist()`. Useful columns include: workload_name, command,
+# compute_partition, memory_partition, gpu_model, gpu_arch, cu_per_gpu,
+# simd_per_cu, num_xcd, num_hbm_channels, lds_banks_per_cu, ...
+# Peak HBM BW is NOT in sysinfo — hard-code per-arch.
+PEAK_HBM_BW_GBPS = {"gfx942": 5300.0, "gfx950": 8000.0}
 sysinfo = pd.read_csv(RPC_DIR / "sysinfo.csv")
-peak_hbm_gbps = float(sysinfo[sysinfo["param"]=="peak_hbm_bw_GBps"]["value"].iloc[0])
+arch = str(sysinfo.iloc[0]["gpu_arch"]).strip()
+peak_hbm_gbps = PEAK_HBM_BW_GBPS.get(arch, 5300.0)
+num_xcd = int(sysinfo.iloc[0]["num_xcd"])
 
-dur_s = float(((t1.End_Timestamp - t1.Start_Timestamp).sum())) / 1e9
-read_bytes = float(pmc[pmc.Dispatch_ID.isin(t1.Dispatch_ID)][["TCC_EA0_RDREQ_32B_sum","TCC_EA1_RDREQ_32B_sum"]].sum().sum()) * 32
+# Wall-clock duration: from rocprofv3 kernel_trace.csv (rocprof-compute has no timestamps.csv).
+import glob
+ktrace_csvs = glob.glob(f"{RUN}/reports/trace_<tag>/**/*_kernel_trace.csv", recursive=True)
+kt = pd.concat([pd.read_csv(p) for p in ktrace_csvs], ignore_index=True)
+kt_k = kt[kt["Kernel_Name"].astype(str).str.contains("my_kernel", regex=True)]
+dur_s = float((kt_k["End_Timestamp"] - kt_k["Start_Timestamp"]).sum()) / 1e9
+
+# gfx942/gfx950 only expose TCC_EA0_*, not TCC_EA1_*.
+read_bytes = float(pmc[["TCC_EA0_RDREQ_32B_sum"]].sum().sum()) * 32
 ach_gbps = read_bytes / dur_s / 1e9
 print(f"HBM read: {ach_gbps:.1f} / {peak_hbm_gbps:.1f} GB/s = {ach_gbps/peak_hbm_gbps*100:.1f}% of peak")
 ```
@@ -270,23 +314,24 @@ If you'd rather just have the table, `rocprof-compute analyze -p ...` prints exa
 Archive the full counter dump so future analysis doesn't need to re-open rocprof outputs:
 
 ```python
-import json
+import os, json
+from pathlib import Path
+import pandas as pd
+RUN = os.environ["PROFILE_RUN_DIR"]
+
 def dump_all(rpc_dir, kernel_regex, outpath):
     rpc = Path(rpc_dir)
-    ts  = pd.read_csv(rpc / "timestamps.csv")
-    sel = ts[ts["Kernel_Name"].str.contains(kernel_regex, regex=True)]
     rows = {}
     pmc = rpc / "pmc_perf.csv"
     if pmc.exists():
         df = pd.read_csv(pmc)
-        if "Dispatch_ID" in df.columns:
-            df = df[df["Dispatch_ID"].isin(sel["Dispatch_ID"])]
+        df = df[df["Kernel_Name"].astype(str).str.contains(kernel_regex, regex=True)]
         for col in df.columns:
             if col in ("Dispatch_ID", "Kernel_Name"): continue
             rows[f"pmc_perf::{col}"] = df[col].sum() if pd.api.types.is_numeric_dtype(df[col]) else df[col].iloc[0]
     Path(outpath).write_text(json.dumps(rows, indent=1, default=str))
 
-dump_all(RPC_DIR, "my_kernel", "analysis/metrics_all_<tag>.json")
+dump_all(f"{RUN}/reports/rpc_<tag>", "my_kernel", f"{RUN}/analysis/metrics_all_<tag>.json")
 ```
 
 This makes future re-analysis cheap: the raw data lives as JSON, you don't need to reopen the report.
@@ -296,8 +341,8 @@ This makes future re-analysis cheap: the raw data lives as JSON, you don't need 
 ## Gotchas
 
 - **`KeyError` / missing column** on a counter that "should" exist: the counter has a different name on this gfx target, or the IP block isn't enabled in this build. Check [`08-mi300x-mi355x-counter-names.md`](08-mi300x-mi355x-counter-names.md) or enumerate with the snippet above.
-- **`TCC_EA_*` vs `TCC_EA0_*` / `TCC_EA1_*`**: on MI300X the L2 / HBM exposes two memory channels per XCD (`EA0`, `EA1`); use the channel-suffixed counters and sum if you want a per-XCD total.
+- **`TCC_EA_*` vs `TCC_EA0_*`**: on gfx942 / gfx950 only `TCC_EA0_*` is exposed per XCD — there is **no** `TCC_EA1_*` (the two-channel form was gfx906 / gfx908). Don't sum a nonexistent second channel; verify with `rocprofv3 -L | grep TCC_EA`.
 - **PC-sampling `Source` column is blank**: rebuild with `-gline-tables-only` / `-g`. Same for ATT's source attribution.
 - **Per-PC ATT data is split across many JSON files** (one per CU / shader engine): glob `att_<tag>/**/*.json` and aggregate.
-- **`SQ_INSTS_MFMA = 0` on a kernel you expect to use MFMA**: either MFMA is not being emitted (check ISA with `llvm-objdump -d`), or the counter group wasn't collected this pass; rerun with `rocprof-compute profile --section 2.1.10` or `--pmc SQ_INSTS_MFMA`.
+- **`SQ_INSTS_MFMA = 0` on a kernel you expect to use MFMA**: either MFMA is not being emitted (check ISA with `llvm-objdump -d`), or the counter group wasn't collected this pass; rerun with `rocprof-compute analyze -p <dir> -b 11` (Compute Pipeline) or `rocprofv3 --pmc SQ_INSTS_MFMA`.
 - **`rocprofv3` replays the application** between PMC groups — any host-side work (init, dataset load) runs N times. Move it out of the profile window.

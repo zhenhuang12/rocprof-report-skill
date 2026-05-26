@@ -15,13 +15,13 @@ For each dimension this doc describes:
 
 **What:** is the grid large enough to fill the GPU? Is occupancy being limited by VGPR/AGPR, LDS, or workgroup-size constraints?
 
-**Counters (rocprof-compute section 2.1.0, 2.1.2):**
+**Counters (rocprof-compute blocks 7 (wavefront launch) and 5 (CS/wavefront), from `pmc_perf.csv`):**
 ```
 Grid_Size, Workgroup_Size (each dim)
 Wave_Size                                       # 64 on CDNA gfx9
-VGPRs (per work-item)
-SGPRs (per wavefront)
-AGPRs (per work-item) — used as MFMA accumulators on CDNA3 (gfx942) when present
+Arch_VGPR (per work-item)                       # the verified column name (NOT "VGPRs")
+SGPR (per wavefront)                            # singular, NOT "SGPRs"
+Accum_VGPR (per work-item)                      # = AGPR pool on CDNA3+ (NOT "AGPRs")
 LDS_Per_Workgroup (bytes, statically + dynamically allocated)
 Scratch_Per_Workitem                            # = register spill bytes (DRAM-backed)
 Wavefronts_Per_Workgroup
@@ -80,8 +80,9 @@ GRBM_SPI_BUSY                         # shader-pipe input busy (workgroup schedu
 # Timeseries (rocprof-compute --timeseries-sampling-rate)
 SQ_WAVES                              # rises with workgroup dispatch, falls with completion
 SQ_INSTS_VALU
-SQ_WAIT_INST_VMEM
-SQ_WAIT_INST_LDS
+SQ_WAIT_INST_ANY                      # broad instruction-issue stall (gfx942/gfx950 PMC)
+SQ_WAIT_INST_LDS                      # LDS-issue stall (gfx942/gfx950 PMC)
+# Granular VMEM/SMEM/FLAT/BARRIER/VMCNT/LGKMCNT classification comes from PC sampling only
 
 # ATT timeline (gold standard but only covers the captured CUs)
 ```
@@ -122,34 +123,33 @@ Ratios > 5x indicate significant potential for tail effect.
 
 **What:** when waves aren't issuing, what are they waiting for? Which source lines generate the most stalls?
 
-**Aggregate wait counters (rocprof-compute section 2.1.13):**
+**Aggregate hardware wait counters (verified via `rocprofv3 -L` on gfx950):**
 
-> **Verify counter names on your ROCm install** with `rocprofv3 -L | grep SQ_WAIT`. The list below
-> reflects gfx942 / gfx950 names that have been observed; non-listed `SQ_WAIT_*` variants
-> (e.g. INST_VALU, INST_SCA, ANY_LDS, ANY, VSCRATCH) are *not* guaranteed to exist and may
-> have been derived metrics in older ROCm releases. Use the rocprof-compute section 2.1.13
-> derived totals instead of inventing counter names.
+> Only three `SQ_WAIT_*` PMC counters exist on gfx942 / gfx950:
+> `SQ_WAIT_ANY`, `SQ_WAIT_INST_ANY`, `SQ_WAIT_INST_LDS`.
+> The granular VMEM/SMEM/FLAT/BARRIER/VMCNT/LGKMCNT/EXPCNT/MISC classification is
+> **NOT exposed as PMC counters** on gfx942 / gfx950 — it comes only from PC sampling's
+> `Wait_Reason` enum (see below).
 
 ```
-# "stall cycles" — number of cycles a wave was waiting on the named resource
-SQ_WAIT_INST_VMEM                     # waiting on vector memory (global load/store, L1)
-SQ_WAIT_INST_LDS                      # waiting on LDS instruction issue
-SQ_WAIT_INST_SMEM                     # waiting on scalar memory
-SQ_WAIT_INST_FLAT                     # waiting on FLAT (generic) memory
-SQ_WAIT_INST_EXP                      # waiting on export (mostly pixel/vertex, rare in compute)
-SQ_WAIT_INST_MISC                     # other instruction-side waits
-SQ_WAIT_BARRIER                       # waiting at s_barrier
-SQ_WAIT_VMCNT, SQ_WAIT_LGKMCNT        # waiting on the s_waitcnt counters
+# Coarse "any wait" PMC counters (gfx942 / gfx950 verified set)
+SQ_WAIT_ANY                            # any wait state (broadest signal)
+SQ_WAIT_INST_ANY                       # waiting on any instruction-side resource
+SQ_WAIT_INST_LDS                       # LDS instruction issue stall (covers bank-conflict serialization)
 
-# Issue / activity
+# Issue / activity (verified)
 SQ_INSTS_VALU
-SQ_INSTS_MFMA
+SQ_INSTS_VALU_MFMA                     # per-dtype MFMA op counts use `SQ_INSTS_VALU_MFMA_<DTYPE>`
+SQ_INSTS_MFMA                          # aggregate MFMA
 SQ_INSTS_VMEM_RD, SQ_INSTS_VMEM_WR
 SQ_INSTS_LDS
+SQ_INSTS_FLAT
 SQ_BUSY_CYCLES
+SQ_WAVES
+SQ_LDS_BANK_CONFLICT
 ```
 
-**Per-PC wait metrics (from `rocprofv3 --pc-sampling-beta-enabled --pc-sampling-method host_trap` or ATT):**
+**Per-PC wait metrics — the ONLY source of the granular VMEM/SMEM/FLAT/BARRIER/VMCNT/LGKMCNT classification on gfx942/gfx950** (from `rocprofv3 --pc-sampling-beta-enabled --pc-sampling-method host_trap` or ATT):
 
 PC sampling output is a CSV with one row per sample. Aggregate by `Wait_Reason` (an enum string) and by `Source` (file:line) — see [`04-python-api.md`](04-python-api.md) example.
 
@@ -173,20 +173,22 @@ name above as a label to match against your actual data, not as a hard guarantee
 
 **Stall reasons you need to know (approximate NVIDIA analogs in parens):**
 
-| Reason | Meaning | Typical cause | Fix direction | NVIDIA analog |
+| Reason (PC-sampling `Wait_Reason`) | Meaning | Typical cause | Fix direction | NVIDIA analog |
 |---|---|---|---|---|
-| `WAIT_INST_VMEM` / `SQ_WAIT_INST_VMEM` | waiting on global / vL1 memory | uncoalesced load, latency-bound | coalesce, reuse, add ILP, use `global_load_lds` | `long_scoreboard` |
-| `WAIT_INST_LDS` / `SQ_WAIT_INST_LDS` | LDS instruction issue stall (covers bank-conflict serialization on most ROCm versions) | LDS bank conflict, too many LDS ops in flight, long LDS dep chain | pad LDS, swizzle, vectorize (`ds_read_b128`) | `short_scoreboard` / `mio_throttle` |
-| `WAIT_BARRIER` / `SQ_WAIT_BARRIER` | waiting at `s_barrier` | other waves haven't arrived | reduce barriers, fix divergence | `barrier` |
-| `WAIT_INST_SMEM` / `SQ_WAIT_INST_SMEM` | waiting on scalar memory | scalar load latency (uniform args, constant cache) | bake to constants, prefetch | (no direct analog) |
-| `WAIT_INST_FLAT` / `SQ_WAIT_INST_FLAT` | waiting on FLAT (generic) memory | generic-addressing global/LDS access | use typed global/LDS when possible | `long_scoreboard` |
+| `WAIT_INST_VMEM` | waiting on global / vL1 memory | uncoalesced load, latency-bound | coalesce, reuse, add ILP, use `global_load_lds` | `long_scoreboard` |
+| `WAIT_INST_LDS` (or PMC `SQ_WAIT_INST_LDS`) | LDS instruction issue stall (covers bank-conflict serialization) | LDS bank conflict, too many LDS ops in flight, long LDS dep chain | pad LDS, swizzle, vectorize (`ds_read_b128`) | `short_scoreboard` / `mio_throttle` |
+| `WAIT_BARRIER` | waiting at `s_barrier` | other waves haven't arrived | reduce barriers, fix divergence | `barrier` |
+| `WAIT_INST_SMEM` | waiting on scalar memory | scalar load latency (uniform args, constant cache) | bake to constants, prefetch | (no direct analog) |
+| `WAIT_INST_FLAT` | waiting on FLAT (generic) memory | generic-addressing global/LDS access | use typed global/LDS when possible | `long_scoreboard` |
 | `WAIT_VMCNT` | explicit `s_waitcnt vmcnt(N)` | inserted by compiler to enforce vmem ordering | unroll, more ILP between waitcnts | partly `long_scoreboard` |
 | `WAIT_LGKMCNT` | explicit `s_waitcnt lgkmcnt(N)` | LDS/GDS/Kernarg ordering | reduce LDS dep chains | (no direct analog) |
 | `NOT_SELECTED` | eligible but scheduler picked another | **good sign** — plenty of parallelism | ignore | `not_selected` |
 | `ISSUED` | actually issuing this cycle | **productive** | ignore | `selected` |
 | `NO_INST` | wave has nothing to issue | kernel prologue/epilogue | usually minor | `no_instruction` |
 
-**Reading the aggregate counters:** normalize by `SQ_BUSY_CYCLES` (or `SQ_WAVES × SQ_ACTIVE_INST_VALU` for issue-relative). A value of e.g. `SQ_WAIT_INST_VMEM / SQ_BUSY_CYCLES = 0.45` means waves spent 45% of busy cycles waiting on vector memory.
+Reminder: of these, only `WAIT_INST_LDS` is also a PMC (`SQ_WAIT_INST_LDS`). The rest are PC-sampling `Wait_Reason` enum values only on gfx942/gfx950.
+
+**Reading the aggregate counters:** normalize by `SQ_BUSY_CYCLES`. For example `SQ_WAIT_INST_LDS / SQ_BUSY_CYCLES = 0.45` means waves spent 45% of busy cycles waiting on LDS. For VMEM / SMEM / FLAT / BARRIER / VMCNT / LGKMCNT breakdowns, count PC-sampling samples per `Wait_Reason` instead.
 
 **Reading the PC-sampling percentages:** sum `Sample_Count` over all rows = total samples. Per-Wait_Reason fraction = "% of samples stalled on X". Rules of thumb:
 
@@ -235,14 +237,14 @@ GRBM_GUI_ACTIVE                        # for normalizing to total time
 
 - Supported shapes: `mfma_*_{4x4x4, 16x16x4, 16x16x16, 32x32x4, 32x32x8}` for F32/F16/BF16/I8; FP8 variants via OCP-FNUZ; FP64 added.
 - Accumulators live in **AGPR** (not VGPR). When `Scratch_Per_Workitem > 0` *and* MFMA-heavy, suspect over-allocation of AGPR forcing spill.
-- Use `v_mfma_f32_32x32x8_bf16` (or `_16x16x16_bf16`) over the older 16x16x4 — same throughput per cycle but better register reuse.
+- Use `v_mfma_f32_32x32x8bf16_1k` (or `v_mfma_f32_16x16x16bf16_1k`) over the older 16x16x4 — same throughput per cycle but better register reuse. The `_1k` suffix is the AMD-canonical name in the LLVM/AMDGPU back-end for the 1-block form.
 
 **MI355X (CDNA4 / gfx950) MFMA notes:**
 
-- FP4 / FP6 / MXFP added (`mfma_scale_*` with E8M0 block-exponent operand) — 8× throughput vs FP16 in best case.
-- TF32 *removed* (does not exist on CDNA4).
+- New block-scaled `F6F4` family added (`v_mfma_*_f6f4` / `v_mfma_scale_*` with E8M0 block-exponent operand), covering FP4 and FP6 storage formats. Verified per-dtype PMC counters on gfx950 include `SQ_INSTS_VALU_MFMA_MOPS_F6F4` and `SQ_INSTS_VALU_MFMA_MOPS_XF32`; check `rocprofv3 -L | grep MFMA` for the exact suffix list your install exposes (raw `_F4` / `_F6` / `_MXFP4` / `_MXFP6` / `_MXFP8` are **not** distinct PMC counters on gfx950).
+- `XF32` (extended-FP32) MFMA exposed (`SQ_INSTS_VALU_MFMA_MOPS_XF32`); TF32 from prior gens does not exist on CDNA4.
 - FP64 throughput **halved** vs CDNA3 — gfx950 is not the GPU for FP64-dense workloads.
-- 2:4 sparse MFMA variants added.
+- 2:4 sparse MFMA variants added (check ISA documentation for exact opcodes).
 - FP8 switched from OCP-FNUZ (CDNA3) to OCP standard (CDNA4); numerics differ slightly.
 
 **Fix direction:** if you see 0% MFMA and the workload is matrix-multiplication-shaped, redesign around MFMA. This is usually a major refactor but gives 2-10× on compute-bound paths. Most projects should use **Composable Kernel** (CK) or **hipBLASLt** instead of hand-rolling, the same way most NVIDIA projects use CUTLASS / cuBLAS.
@@ -259,8 +261,8 @@ GRBM_GUI_ACTIVE                             # global active cycles (denominator 
 GRBM_COUNT                                  # total elapsed cycles since last reset
 SQ_BUSY_CYCLES                              # per-CU
 SQ_WAVES                                    # in-flight waves
-SQ_WAIT_INST_VMEM, SQ_WAIT_INST_LDS         # over time
-TCC_EA0_RDREQ_sum, TCC_EA1_RDREQ_sum        # HBM read pressure over time
+SQ_WAIT_INST_LDS, SQ_WAIT_INST_ANY          # over time (the only granular SQ_WAIT_* PMCs on gfx942/gfx950)
+TCC_EA0_RDREQ_sum                           # HBM read pressure over time (TCC_EA1_* does NOT exist on gfx942/gfx950)
 ```
 
 **Reading (timeline shapes):**
@@ -284,15 +286,16 @@ TCC_EA0_RDREQ_sum, TCC_EA1_RDREQ_sum        # HBM read pressure over time
 
 **Counters (rocprof-compute sections 2.1.15, 2.1.16, 2.1.17):**
 ```
-# HBM (TCC_EA = "Effective Address" memory subsystem; channels EA0/EA1 per XCD)
+# HBM (TCC_EA = "Effective Address" memory subsystem)
+# On gfx942 / gfx950, only `TCC_EA0_*` exists — there is NO `TCC_EA1_*` (a
+# second EA channel was a gfx906/gfx908 thing). Verify with `rocprofv3 -L | grep TCC_EA`.
 TCC_EA0_RDREQ_sum                              # HBM read requests (count)
 TCC_EA0_RDREQ_32B_sum                          # 32B-sized read requests
 TCC_EA0_WRREQ_sum                              # HBM write requests
 TCC_EA0_WRREQ_64B_sum
-TCC_EA1_RDREQ_sum                              # second channel
 TCC_EA0_REQ                                    # all requests
 TCC_EA0_MEM_REQ_LATENCY                        # latency histogram (if collected)
-# Achieved HBM BW = (RDREQ_32B + WRREQ_64B*2) * 32 / kernel_time
+# Achieved HBM BW ≈ (TCC_EA0_RDREQ_32B_sum * 32 + TCC_EA0_WRREQ_64B_sum * 64) / kernel_time
 
 # L2 (TCC = Texture Cache (controlled by L2 on CDNA))
 TCC_HIT_sum, TCC_MISS_sum                      # L2 hit/miss counts (aggregated across channels)
@@ -329,7 +332,7 @@ SQ_INSTS_FLAT                                    # FLAT addressing path
 - **HBM achieved BW << 10% of peak but kernel is slow**: *not* bandwidth-bound. It's latency-bound (Dimension 3) or compute-bound (check `SQ_INSTS_MFMA` + busy %).
 - **vL1 hit rate > 90%**: good data locality, vL1 is absorbing the reuse.
 - **L2 hit rate < 50%**: L2 is being blown through (or the kernel is reading something it never reuses), reads fall to HBM.
-- **Bytes per wavefront (rocprof-compute reports this in section 2.1.11)**: ideal is 256 B (= one `global_load_dwordx4` per lane × 64 lanes × 4 B). Substantially less means under-vectorization; gather/scatter; or stride > 1 access.
+- **Bytes per wavefront (rocprof-compute reports this in section 11 "Instruction Mix" / 15 "L1D Cache")**: ideal is 256 B for a coalesced wave64 dword load (4 B/lane × 64 lanes); a wider `global_load_dwordx4` raises this to 1024 B/wave (16 B/lane × 64 lanes). Substantially less means under-vectorization, gather/scatter, or stride > 1 access.
 - **`SQ_LDS_BANK_CONFLICT > 0`**: bank conflicts. The 32-bank LDS serializes same-bank accesses. Pad tile dims or swizzle indices. LDS budget is 64 KB/CU on both MI300X and MI355X, so the padding-cost / occupancy trade is the same on both gens.
 - **`Scratch_Per_Workitem > 0` (from launch info) or rocprof-compute SoL "Scratch" non-zero**: **register spill** — very bad, scratch is HBM-backed. Reduce VGPR/AGPR pressure with `__launch_bounds__` or kernel splitting.
 - **`SQ_INSTS_LDS == 0`**: kernel uses no LDS. Fine for element-wise kernels; often a missed optimization for data-reuse-heavy kernels.
@@ -342,7 +345,7 @@ Bandwidth  X TB/s  ...     ...     Y%
 
 **MI300X-specific reading:**
 
-- **Per-XCD HBM** (NPS2/NPS4 partitions): each XCD has its own HBM stack. A workgroup running on XCD-N pays cross-XCD XGMI hops if it touches data placed on XCD-M's stack. Check this with `TCC_EAi_RDREQ_sum` per channel — wildly different values across i = 0..7 means cross-XCD traffic.
+- **Per-XCD HBM** (NPS2/NPS4 partitions): each XCD has its own HBM stack. A workgroup running on XCD-N pays cross-XCD XGMI hops if it touches data placed on XCD-M's stack. On gfx942/gfx950 the per-XCD HBM-channel counter exposed in PMC is `TCC_EA0_*` only (a single channel per XCD). The older two-channel `TCC_EA0_* + TCC_EA1_*` formula seen in gfx906/gfx908 docs does **not** apply on MI300X/MI355X — `TCC_EA1_*` does not exist on these gens.
 - **Infinity Cache (256 MB shared L3-ish)**: on a kernel that re-reads a working-set < 256 MB, an Infinity Cache hit (visible as TCC_HIT without going to HBM) is much cheaper than HBM. If the working set is just over 256 MB, even a tiny tiling change can swing perf hugely.
 
 **MI355X-specific reading:**

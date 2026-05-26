@@ -1,13 +1,15 @@
 """Shared helpers for parsing rocprofv3 / rocprof-compute outputs.
 
 Designed to work with both:
-  - rocprof-compute (ROCm 6.3+): writes a flat directory under the `-p` path
-    containing `pmc_perf.csv`, `timestamps.csv`, `sysinfo.csv`,
-    `roofline.csv` (when `--roofline` is set), plus a `perfmon/` subdir with
-    one `.txt`/`.yaml` per PMC group. There is no `SoC/` subdir in current
-    releases — all counters live in `pmc_perf.csv`.
+  - rocprof-compute (ROCm 6.3+): writes a directory under the `-p` path with
+    a merged `pmc_perf.csv`, `pmc_kernel_top.csv`, `sysinfo.csv` (wide
+    single-row format, NOT param/value), `roofline.pdf` (PDF when roofline
+    ran; default-on, suppress with `--no-roof`), and `profiling_config.yaml`,
+    plus raw per-PMC-group CSVs under `out/pmc_<N>/<hostname>/<pid>_*.csv`.
+    There is NO `timestamps.csv` — kernel timing lives in the rocprofv3
+    `kernel_trace.csv` of a separate `--kernel-trace` collection.
   - ROCm 7.x: rocprofv3 defaults to a single `.db` per run using the
-    rocpd schema (the optional `rocpd` Python helper, or plain sqlite3)
+    rocpd schema (the optional `rocpd` Python helper, or plain sqlite3).
 
 Usage:
     from rocprof_utils import (
@@ -35,51 +37,59 @@ except ImportError as e:  # pragma: no cover
 
 # --- Loading rocprof-compute output dirs ------------------------------------
 
-def load_rpc_dir(rpc_dir, kernel_regex=None):
+def load_rpc_dir(rpc_dir, kernel_regex=None, kernel_trace_csv=None):
     """Load the standard rocprof-compute output tree into a dict of DataFrames.
 
     Args:
         rpc_dir: path to a rocprof-compute profile directory (the `-p` arg).
         kernel_regex: if given, filter pmc CSVs to dispatches whose
-            Kernel_Name matches this regex. Selects via timestamps.csv.
+            Kernel_Name matches this regex. Filtering uses pmc_perf.csv's
+            own `Kernel_Name` column (there is no `timestamps.csv`).
+        kernel_trace_csv: optional path to a rocprofv3 `kernel_trace.csv`
+            produced by a separate `--kernel-trace` run; loaded into
+            out['kernel_trace'] for timing reference (Start_Timestamp /
+            End_Timestamp live there, NOT in pmc_perf.csv).
 
     Returns:
         dict with keys:
-            'pmc'        — DataFrame from pmc_perf.csv (all counters land here)
-            'timestamps' — DataFrame from timestamps.csv (filtered if regex)
-            'sysinfo'    — DataFrame from sysinfo.csv (if present)
-            'roofline'   — DataFrame from roofline.csv (if present)
-            'rpc_dir'    — original path
+            'pmc'           — DataFrame from pmc_perf.csv (all counters)
+            'sysinfo'       — DataFrame from sysinfo.csv (wide single-row format)
+            'kernel_trace'  — DataFrame from the supplied kernel_trace.csv, if any
+            'rpc_dir'       — original path
     """
     rpc = Path(rpc_dir)
     if not rpc.is_dir():
         raise FileNotFoundError(f"rocprof-compute dir not found: {rpc}")
 
     out = {"rpc_dir": rpc}
-    ts_path = rpc / "timestamps.csv"
-    out["timestamps"] = pd.read_csv(ts_path) if ts_path.exists() else pd.DataFrame()
-
-    sel_ids = None
-    if kernel_regex is not None and not out["timestamps"].empty:
-        mask = out["timestamps"]["Kernel_Name"].astype(str).str.contains(
-            kernel_regex, regex=True
-        )
-        out["timestamps"] = out["timestamps"][mask].copy()
-        if "Dispatch_ID" in out["timestamps"].columns:
-            sel_ids = set(out["timestamps"]["Dispatch_ID"].tolist())
 
     pmc_path = rpc / "pmc_perf.csv"
     if pmc_path.exists():
         pmc = pd.read_csv(pmc_path)
-        if sel_ids is not None and "Dispatch_ID" in pmc.columns:
-            pmc = pmc[pmc["Dispatch_ID"].isin(sel_ids)].copy()
+        if kernel_regex is not None and "Kernel_Name" in pmc.columns:
+            mask = pmc["Kernel_Name"].astype(str).str.contains(
+                kernel_regex, regex=True
+            )
+            pmc = pmc[mask].copy()
         out["pmc"] = pmc
     else:
         out["pmc"] = pd.DataFrame()
 
-    for opt in ("sysinfo.csv", "roofline.csv"):
-        p = rpc / opt
-        out[opt.replace(".csv", "")] = pd.read_csv(p) if p.exists() else pd.DataFrame()
+    sys_path = rpc / "sysinfo.csv"
+    out["sysinfo"] = pd.read_csv(sys_path) if sys_path.exists() else pd.DataFrame()
+
+    if kernel_trace_csv is not None:
+        ktp = Path(kernel_trace_csv)
+        if ktp.exists():
+            kt = pd.read_csv(ktp)
+            if kernel_regex is not None and "Kernel_Name" in kt.columns:
+                kt = kt[kt["Kernel_Name"].astype(str).str.contains(
+                    kernel_regex, regex=True)].copy()
+            out["kernel_trace"] = kt
+        else:
+            out["kernel_trace"] = pd.DataFrame()
+    else:
+        out["kernel_trace"] = pd.DataFrame()
 
     return out
 
@@ -131,8 +141,16 @@ def enumerate_counters(rpc_dir):
 # --- Kernel duration --------------------------------------------------------
 
 def kernel_duration_ns(rpc):
-    """Total duration across selected dispatches, in nanoseconds."""
-    ts = rpc.get("timestamps") if isinstance(rpc, dict) else rpc
+    """Total duration across selected dispatches, in nanoseconds.
+
+    Reads from a rocprofv3 `kernel_trace.csv` loaded into rpc['kernel_trace']
+    (pmc_perf.csv on current rocprof-compute does NOT carry per-dispatch
+    Start_Timestamp / End_Timestamp columns).
+    """
+    if isinstance(rpc, dict):
+        ts = rpc.get("kernel_trace")
+    else:
+        ts = rpc
     if ts is None or getattr(ts, "empty", True):
         return 0
     if "Start_Timestamp" not in ts.columns or "End_Timestamp" not in ts.columns:
@@ -149,12 +167,17 @@ def kernel_duration_ns(rpc):
 # `enumerate_counters(rpc_dir)` or `rocprofv3 -L` (a.k.a. `--list-avail`).
 
 _COMMON_GEOMETRY = [
-    # pmc_perf.csv per-dispatch columns (not strictly PMCs but useful)
+    # pmc_perf.csv per-dispatch columns (not strictly PMCs but useful).
+    # Verified column names on rocprof-compute ROCm 7.x:
+    #   Arch_VGPR  (per work-item architectural VGPR count; NOT "VGPRs")
+    #   Accum_VGPR (per work-item AGPR pool on CDNA3+; NOT "AGPRs")
+    #   SGPR       (per wavefront; singular, NOT "SGPRs")
+    # Start_Timestamp / End_Timestamp are NOT in pmc_perf.csv — they live
+    # in the rocprofv3 kernel_trace.csv from a separate --kernel-trace run.
     "Dispatch_ID", "Kernel_Name", "GPU_ID",
     "Grid_Size", "Workgroup_Size",
     "LDS_Per_Workgroup", "Scratch_Per_Workitem",
-    "VGPRs", "SGPRs", "AGPRs", "Wave_Size",
-    "Start_Timestamp", "End_Timestamp",
+    "Arch_VGPR", "Accum_VGPR", "SGPR", "Wave_Size",
 ]
 
 _COMMON_SQ = [
@@ -165,15 +188,13 @@ _COMMON_SQ = [
     "SQ_INSTS_LDS", "SQ_INSTS_BRANCH", "SQ_INSTS_MFMA",
     "SQ_BUSY_CYCLES",
     "SQ_VALU_MFMA_BUSY_CYCLES",
-    # Wait reasons (analog of NVIDIA stall reasons) — verified set on gfx942 /
-    # gfx950 with ROCm 6.4 / 7.x. Names with no stable counter (INST_VEC,
-    # INST_SCA, INST_VSCRATCH, ANY_LDS, ANY) were removed; verify on your
-    # install with `rocprofv3 -L | grep SQ_WAIT` before extending this list.
-    "SQ_WAIT_INST_VMEM", "SQ_WAIT_INST_LDS", "SQ_WAIT_INST_SMEM",
-    "SQ_WAIT_INST_FLAT", "SQ_WAIT_INST_EXP", "SQ_WAIT_INST_MISC",
-    "SQ_WAIT_BARRIER",
-    "SQ_WAIT_VMCNT", "SQ_WAIT_LGKMCNT", "SQ_WAIT_EXPCNT",
-    "SQ_INST_LEVEL_VMEM", "SQ_INST_LEVEL_LDS",
+    # Wait reasons — VERIFIED set on gfx942 / gfx950:
+    # ONLY three SQ_WAIT_* PMCs exist (SQ_WAIT_ANY, SQ_WAIT_INST_ANY,
+    # SQ_WAIT_INST_LDS) plus SQ_INST_LEVEL_LDS. Granular VMEM / SMEM / FLAT /
+    # BARRIER / VMCNT / LGKMCNT / EXPCNT / MISC classification is PC-sampling-
+    # only on these gens — see load_pcsamp_csv() / stall_hotspots() below.
+    "SQ_WAIT_ANY", "SQ_WAIT_INST_ANY", "SQ_WAIT_INST_LDS",
+    "SQ_INST_LEVEL_LDS",
     # LDS
     "SQ_LDS_BANK_CONFLICT", "SQ_LDS_IDX_ACTIVE", "SQ_LDS_ATOMIC_RETURN",
     "SQ_LDS_UNALIGNED_STALL",
@@ -185,22 +206,24 @@ _COMMON_CACHE = [
     "TCP_TCC_READ_REQ_sum", "TCP_TCC_WRITE_REQ_sum",
     "TCP_TCC_ATOMIC_WITH_RET_REQ_sum", "TCP_TCC_ATOMIC_WITHOUT_RET_REQ_sum",
     "TCP_PENDING_STALL_CYCLES_sum",
-    # L2 (TCC)
+    # L2 (TCC) — VERIFIED aggregate counters on gfx942 / gfx950:
+    # TCC_HIT_sum, TCC_MISS_sum, TCC_REQ_sum, TCC_ATOMIC_sum.
+    # TCC_REQ_READ_sum / TCC_REQ_WRITE_sum are NOT in the verified set on
+    # these gens — confirm with `rocprofv3 -L | grep '^TCC_'` on your install.
     "TCC_HIT_sum", "TCC_MISS_sum",
-    "TCC_REQ_sum", "TCC_REQ_READ_sum", "TCC_REQ_WRITE_sum",
+    "TCC_REQ_sum",
     "TCC_ATOMIC_sum",
 ]
 
 _COMMON_HBM = [
-    # HBM read
+    # HBM read — TCC_EA1_* does NOT exist on gfx942 / gfx950 (single EA
+    # channel per XCD). Older gfx906/gfx908 EA0+EA1 formulas do not apply.
     "TCC_EA0_RDREQ_sum", "TCC_EA0_RDREQ_32B_sum", "TCC_EA0_RDREQ_DRAM_sum",
-    "TCC_EA1_RDREQ_sum", "TCC_EA1_RDREQ_32B_sum", "TCC_EA1_RDREQ_DRAM_sum",
     # HBM write
     "TCC_EA0_WRREQ_sum", "TCC_EA0_WRREQ_64B_sum", "TCC_EA0_WRREQ_DRAM_sum",
-    "TCC_EA1_WRREQ_sum", "TCC_EA1_WRREQ_64B_sum", "TCC_EA1_WRREQ_DRAM_sum",
     # Atomic / IO
-    "TCC_EA0_ATOMIC_sum", "TCC_EA1_ATOMIC_sum",
-    "TCC_EA0_RDREQ_IO_sum", "TCC_EA1_RDREQ_IO_sum",
+    "TCC_EA0_ATOMIC_sum",
+    "TCC_EA0_RDREQ_IO_sum", "TCC_EA0_WRREQ_IO_sum",
 ]
 
 _COMMON_GRBM = [
@@ -225,13 +248,13 @@ MI300X_MFMA = [
     "SQ_INSTS_VALU_MFMA_MOPS_F8",               # FNUZ on CDNA3
 ]
 
-# CDNA4 (gfx950 / MI355X) — adds OCP standard FP8 + FP6/FP4/MXFP.
+# CDNA4 (gfx950 / MI355X) — adds OCP standard FP8 + the block-scaled F6F4
+# family and extended-FP32 (XF32). VERIFIED via `rocprofv3 -L | grep MFMA`
+# on gfx950: F16, BF16, F32, F64, I8, F8, XF32, F6F4. No separate _F4 / _F6
+# / _MXFP4 / _MXFP6 / _MXFP8 PMCs exist — they roll up into _F6F4.
 MI355X_MFMA = MI300X_MFMA + [
-    "SQ_INSTS_VALU_MFMA_MOPS_F6",
-    "SQ_INSTS_VALU_MFMA_MOPS_F4",
-    "SQ_INSTS_VALU_MFMA_MOPS_MXFP8",
-    "SQ_INSTS_VALU_MFMA_MOPS_MXFP6",
-    "SQ_INSTS_VALU_MFMA_MOPS_MXFP4",
+    "SQ_INSTS_VALU_MFMA_MOPS_XF32",
+    "SQ_INSTS_VALU_MFMA_MOPS_F6F4",
 ]
 
 MI300X_KEY_COUNTERS = (
@@ -268,12 +291,21 @@ def key_counters_for_arch(arch):
 def detect_arch(rpc):
     """Best-effort guess of gfx target from rocprof-compute sysinfo.
 
+    sysinfo.csv on current rocprof-compute is a WIDE single-row CSV (column
+    names like `gpu_arch`, `num_xcd`, `gpu_model`, etc.), not a param/value
+    table. We flatten the row into a string and substring-match.
+
     Returns one of 'gfx942', 'gfx950', or None.
     """
     sysinfo = rpc.get("sysinfo") if isinstance(rpc, dict) else None
     if sysinfo is None or sysinfo.empty:
         return None
-    s = sysinfo.astype(str).agg(" ".join, axis=1).str.lower().str.cat(sep=" ")
+    try:
+        # iloc[0] is the single sysinfo row; flatten all cells to lower-cased str.
+        row = sysinfo.iloc[0]
+        s = " ".join(str(v) for v in row.values).lower()
+    except Exception:
+        s = sysinfo.astype(str).agg(" ".join, axis=1).str.lower().str.cat(sep=" ")
     if "gfx950" in s or "mi355" in s:
         return "gfx950"
     if "gfx942" in s or "mi300" in s:
@@ -457,10 +489,14 @@ def parse_analyze_text(path):
     Returns dict[section_id_str] -> list-of-rows. We don't try to type-coerce;
     that's the caller's job. Use this for diffing two `details_<tag>.txt` files.
     """
-    # rocprof-compute marks sections like "2.1.15 Memory — vL1 Cache"
-    # (a triple-dotted numeric ID, then whitespace, then a title). Requiring
-    # 2+ dots rejects plain numeric data rows like "3.14 ms" or "4.5e-3".
-    section_re = re.compile(r"^(\d+(?:\.\d+){2,})\s+\S")
+    # rocprof-compute marks sections by either the legacy dotted form
+    # ("2.1.15 Memory — vL1 Cache", with 2+ dots) or the current top-level
+    # integer block ID ("15. L1D Cache" / "15 L1D Cache"). Match both, but
+    # require either 2+ dots OR a 1-3 digit integer followed by a period
+    # to avoid eating "3.14 ms" / "4.5e-3" data rows.
+    section_re = re.compile(
+        r"^((?:\d+(?:\.\d+){2,})|(?:\d{1,3}\.?))\s+\S"
+    )
     out = {}
     current = None
     rows = []
