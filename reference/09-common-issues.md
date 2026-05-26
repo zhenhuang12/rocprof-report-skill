@@ -1,150 +1,195 @@
-# Common Issues & Gotchas
+# Common Issues & Gotchas (AMD ROCm profiling stack)
 
-Collected solutions for the recurring frustrations of profiling CUDA kernels.
-
----
-
-## ncu permissions
-
-### `ERR_NVGPUCTRPERM: The user does not have permission to access NVIDIA GPU Performance Counters on the target device`
-
-Two solutions:
-
-**A) Use sudo (simplest on dedicated servers):**
-```bash
-sudo ncu [...]
-```
-
-**B) Make it persistent (preferred on shared servers):**
-```bash
-sudo sh -c 'echo "options nvidia NVreg_RestrictProfilingToAdminUsers=0" > /etc/modprobe.d/ncu.conf'
-sudo update-initramfs -u
-# reboot, then regular user can run ncu
-```
-
-### `Could not deploy stock section files to "/home/USER/Documents/NVIDIA Nsight Compute/..."`
-
-Set `HOME` to a writable directory:
-```bash
-export HOME=/any/writable/path
-ncu [...]
-```
-
-This warning is harmless but noisy. ncu falls back to reading from the CUDA install dir.
+Collected solutions for the recurring frustrations of profiling HIP / Triton-AMD kernels with rocprofv3, rocprof-compute, and ATT/PC-sampling.
 
 ---
 
-## `-k "regex:..."` matches nothing
+## rocprofv3 / rocprof-compute permissions
 
-1. **Use the demangled name.** Templates produce something like `void my_kernel<(int)8, (int)256>(...)`. Check:
+### `HSA_STATUS_ERROR: Profiling permissions not granted`
+
+You need access to `/dev/kfd` and `/dev/dri/renderD*` and (usually) membership in the `render` (and on some distros also `video`) group.
+
+```bash
+ls -la /dev/kfd /dev/dri/renderD*       # check ownership
+id                                       # confirm you're in render / video
+getfacl /dev/kfd                         # any extra ACLs?
+```
+
+Fixes:
+
+**A) Add yourself to the right groups:**
+```bash
+sudo usermod -aG render,video $USER
+# log out and back in (or run `newgrp render`)
+```
+
+**B) In a container:** run with `--device=/dev/kfd --device=/dev/dri --group-add render --group-add video`. Many ROCm Docker images set this up automatically; check `docker inspect <container> | grep Devices`.
+
+**C) ATT / PC sampling need additional privileges on some kernels.** Try `setcap cap_perfmon=ep $(which rocprofv3)` or, as a last resort, `sudo`. Unlike NVIDIA, you usually do NOT need root for plain PMC collection — that's a sign your `render` group is misconfigured.
+
+### `Failed to load HSA tools library` / `libhsa-runtime64.so not found`
+
+ROCm install path isn't on `LD_LIBRARY_PATH`:
+```bash
+source /opt/rocm/bin/env.sh                # or wherever your ROCm install lives
+# or manually:
+export ROCM_PATH=/opt/rocm
+export LD_LIBRARY_PATH=$ROCM_PATH/lib:$LD_LIBRARY_PATH
+export PATH=$ROCM_PATH/bin:$PATH
+```
+
+### `rocprofv3: command not found` but `rocprof` works
+
+You're on ROCm 6.0/6.1 which only ships `rocprof` (the legacy tool). Upgrade to ROCm 6.2+ for `rocprofv3` and ROCm 6.3+ for `rocprof-compute` (formerly Omniperf, formerly Omnitrace). MI355X (gfx950) **requires ROCm 7+**.
+
+---
+
+## `--kernel-include-regex` / `--kernel-name` matches nothing
+
+1. **Use the demangled name.** Templates produce something like `my_kernel<8, 256>(...)`. Check:
    ```bash
-   cuobjdump --dump-function-names ./my_harness
+   # Modern (ROCm 6.4+)
+   llvm-objdump --offloading --arch-name=amdgcn-amd-amdhsa--gfx942 \
+                ./harness -o /tmp/co.o
+   llvm-objdump --syms --demangle /tmp/co.o | grep -iE 'FUNC|KERNEL'
+
+   # Legacy
+   roc-obj-ls ./harness
    ```
-   Match against the visible string.
-2. **Escape regex metacharacters.** `<` and `>` don't need escaping in most regex flavors, but be careful with parentheses.
-3. **The kernel might not have been launched.** Run the harness without ncu and confirm the kernel actually runs.
+   Match against the demangled form. Itanium-ABI mangling: `_Z9my_kernelILi8ELi256EEvPK...` demangles to `void my_kernel<8, 256>(...)`.
+
+2. **Escape regex metacharacters carefully.** Parentheses, `<`, `>` may need escaping depending on the regex engine. rocprofv3 uses POSIX ERE by default.
+
+3. **Kernel never launched.** Run the harness without rocprof and confirm the kernel actually runs. Add `AMD_LOG_LEVEL=4` to see kernel launches in the runtime log.
+
+4. **Wrong `--offload-arch`.** If you compiled for `gfx906` and the host has `gfx942`, `hipErrorInvalidDeviceFunction` fires at launch and no kernel runs. Check `rocminfo | grep gfx` for the actual device arch.
 
 ---
 
-## Source view is empty / `action.source_info(pc)` returns None
+## Source view is empty / `Source` column blank in PC-sampling CSV / ATT
 
-The binary was compiled without `-lineinfo`. Add it to the nvcc invocation:
+The binary was compiled without `-gline-tables-only` (or `-g`). Add it:
 ```bash
-nvcc -O2 -std=c++17 -lineinfo -gencode=... kernel.cu -o harness
+hipcc -O3 -std=c++17 -gline-tables-only --offload-arch=gfx942 kernel.hip -o harness
 ```
 
 For JIT / framework-integrated builds:
 
-- **TVM-FFI**: hard to inject `-lineinfo`. Easiest fix: build a standalone harness (see `02-harness-guide.md`).
-- **PyTorch `torch.utils.cpp_extension.load`**: pass `extra_cuda_cflags=["-lineinfo"]`. But also switch out of `-O3 -G` to avoid heavy debug instrumentation.
-- **CUTLASS**: pass `-lineinfo` via `CMAKE_CUDA_FLAGS`.
-- **Triton**: harder — Triton's JIT codegen ignores user nvcc flags. To do source-level on Triton, dump the generated PTX, rebuild as a standalone, and profile.
+- **PyTorch `torch.utils.cpp_extension.load` on ROCm**: pass `extra_cuda_cflags=["-gline-tables-only"]` (the kwarg name is `extra_cuda_cflags` even on ROCm — it's just passed to `hipcc`).
+- **Triton (Triton-MLIR for AMD)**: the MLIR pipeline owns the final HSACO; user hipcc flags are ignored. Easiest fix: build a standalone harness from the dumped HIP code. Set `TRITON_KERNEL_DUMP=1` or `MLIR_ENABLE_DUMP=1` to see the lowering.
+- **Composable Kernel JIT**: edit the `ck.json` build config to inject `-gline-tables-only`, or rebuild the targeted kernel as a standalone.
+- **rocBLAS / hipBLASLt**: most prebuilt kernels are stripped of debug info. To profile a specific GEMM, build a tiny harness that calls `hipblasltMatmul` with the same problem size — the source-line view will at least cover your host call site; for ISA-level you'll need ATT without source attribution.
 
 ---
 
-## PM sampling returns nothing
+## PC sampling silently no-ops
 
-1. **You didn't request it.** Add `--section PmSampling --section PmSampling_WarpStates` to the ncu invocation.
-2. **vGPU / MIG environment.** PM sampling isn't supported under virtualization. Use metric-based (non-timeline) analysis only.
-3. **Kernel too short.** Kernels under ~20 µs produce few PM samples; what comes back is dominated by warmup noise.
-4. **Specific PM metric just isn't available on your GPU / driver / ncu combination.** Some `pmsampling:sm__throughput.*` or `pmsampling:dram__throughput.*` variants may return empty instance arrays even when other `pmsampling:smsp__warps_issue_stalled_*` series work fine on the same report. Always check `m.num_instances() > 0`; if the SM/DRAM timeline is empty, the stall-reason timelines are a reliable proxy.
-
----
-
-## ncu takes forever to finish
-
-1. **`--set full` needs 45+ replay passes.** That's normal — each pass reruns the kernel for a different metric group. If your kernel takes 3 ms, full profile takes ~15 s; 3 ms → 300 ms kernels are miserable. Mitigation: profile a smaller representative workload if possible.
-2. **Kernel launches aren't isolated.** If your binary does other expensive work (data loading, CUDA context init) before every kernel launch, that runs on every replay too. Move it outside the profile window (ncu only profiles kernel launches matching `-k`).
-3. **Don't use `-G` (debug).** It regresses performance ~100× and is useless for perf profiling.
+1. **Method not supported on your hardware.** Try `--pc-sampling-method host-trap` first — it works on MI200+ and is the most portable. `stochastic` is lower-overhead but requires MI300+ and a recent ROCm build with the kernel-mode feature compiled in.
+2. **Sampling interval too coarse.** `--pc-sampling-interval 1000000 --pc-sampling-unit cycles` may produce no samples for a 100 µs kernel. Drop to `1000` or `100`.
+3. **Kernel too short.** Kernels under ~50 µs may not produce useful sample counts. Increase work in the harness (run the kernel in a small loop — but be aware rocprofv3 replays each PMC group, so this can blow up wall time).
+4. **Permission issue.** Some ROCm builds require `CAP_PERFMON` for PC sampling. Try `sudo` to confirm it's a perms issue.
 
 ---
 
-## Kernel crashes / produces NaN only under ncu
+## ATT (Advanced Thread Trace / SQTT) gotchas
 
-1. **Profiler clock jitter.** Between replays, ncu resets GPU state. Kernels that depend on specific uninitialized values (bad practice) can behave differently. Fix: initialize all inputs.
-2. **Out-of-order pre-replay memory**: ncu saves/restores GPU memory between replays but that can expose latent bugs like reading uninitialized global memory.
+1. **Default captures 1 CU per SE.** That's intentional — ATT generates ~10s-100s of MB per CU per millisecond. To cover more, increase `--att-shader-engine-mask 0xF` (first 4 SEs) and pick the CU index that matches your tail-effect probe.
+2. **Buffer overflow / truncated trace.** Bump `--att-buffer-size 0x40000000` (1 GB) and reduce the captured kernel duration. The trace is per-SE; total memory is buffer_size × num_SEs.
+3. **`att_<tag>/*.json` empty or `Source` column blank.** Rebuild with `-gline-tables-only`. ATT also needs symbols to attribute to source — `strip` will silently break it.
+4. **One JSON per CU/SE, not one for the run.** Glob `att_<tag>/**/*.json` and merge in Python. Use `att_tool` (ships with rocprofv3) for binary-format ATT.
+5. **Captures the wrong kernel iteration.** ATT triggers on the *first* matching launch by default. To capture iteration N, combine with `--kernel-iteration-range "[N:N+1]"`.
 
 ---
 
-## Metric returns `None`
+## rocprof-compute takes forever to finish
 
-1. **Wrong metric name.** See `08-b200-metric-names.md`. Many stock docs use names that don't exist on B200.
-2. **Metric not in the collected sections.** Add the relevant `--section` or `--set`.
-3. **Value is legitimately missing.** Some metrics (like tensor pipe counters) return 0 rather than None when the feature wasn't used; but others return None for hardware not present.
+1. **PMC group replays.** `rocprof-compute profile` runs ~15-30 passes (one per PMC counter group), and rocprofv3 **replays the entire binary** each pass — not just the kernel. If your kernel takes 10 ms but init takes 5 s, each pass is 5.01 s and a full profile is ~150 s. Move host-side init out of the profile window, or shrink the harness.
+2. **Roofline benchmarks add ~30 s.** Skip `--roofline` once you've cached the GPU's roofline on this host; the result is reusable across runs of the same kernel.
+3. **Don't profile with debug builds.** `-O0 -g` is ~10× slower than `-O3 -gline-tables-only` and the codegen doesn't represent prod.
 
-Always wrap metric reads in a helper that returns a default:
+---
+
+## `rocprof-compute analyze` output is mostly N/A
+
+The PMC groups that back each section weren't collected. Causes:
+
+- You passed `--pmc <small list>` instead of running `rocprof-compute profile`, so only those counters exist. Run the full `rocprof-compute profile` for SoL / section analysis.
+- The IP block is disabled on this hardware partition (e.g., CPX mode reduces visible CUs and TCC channels).
+- ROCm version too old for some sections (CDNA4-specific MFMA shapes need ROCm 7+).
+
+Try `rocprof-compute analyze -p rpc_<tag> -b <ID>` to render a single section and see what's missing.
+
+---
+
+## Kernel crashes / produces NaN only under rocprof
+
+1. **`AMD_SERIALIZE_KERNEL=3` exposes latent races.** Run with it set both with and without rocprof to confirm the bug is racy, not profiler-induced.
+2. **`-munsafe-fp-atomics`** enables HBM atomic instructions that some old drivers handle incorrectly. If the kernel only NaN's with this flag, file a driver bug and fall back to `-mno-unsafe-fp-atomics` (uses CAS loops, slower but correct).
+3. **GPU clock changes between replays.** Lock with `sudo rocm-smi --setperflevel high` and rerun.
+
+---
+
+## CSV column missing from `pmc_perf.csv` / `SoC/*.csv`
+
+1. **Wrong counter name for this gfx.** See [`08-mi300x-mi355x-counter-names.md`](08-mi300x-mi355x-counter-names.md). gfx906/908/90a name differently than gfx942/950.
+2. **Counter not in this PMC group.** rocprofv3 logs the group assignment — search the log for the counter name. If you need a specific counter, list it explicitly via `--pmc` or a YAML job file.
+3. **Counter is conditional.** Some counters (MFMA per-shape) only emit non-zero values when the kernel actually used that instruction shape. The column exists; the value is 0.
+
+Always wrap CSV reads in a safe accessor:
 ```python
-def safe(action, name, default=None):
-    try:
-        return action[name].value()
-    except Exception:
-        return default
+def safe_col(df, name, default=None):
+    return df[name] if name in df.columns else default
 ```
 
 ---
 
-## `ncu_report` import fails
+## `rocpd` import fails (ROCm 7+ Python helper)
 
 ```bash
-find /usr/local/cuda* -name "ncu_report*" -type f 2>/dev/null
-# e.g. /usr/local/cuda-13.2/nsight-compute-2026.1.0/extras/python/ncu_report.py
-export PYTHONPATH=$PYTHONPATH:/usr/local/cuda-13.2/nsight-compute-2026.1.0/extras/python
-python3 -c "import ncu_report; print('OK')"
+python3 -c "import rocpd; print(rocpd.__file__)"
+# If ImportError:
+find /opt/rocm* -name "rocpd*" -type d 2>/dev/null
+# e.g. /opt/rocm-7.0.0/share/rocprofiler-sdk/python
+export PYTHONPATH=$PYTHONPATH:/opt/rocm-7.0.0/share/rocprofiler-sdk/python
+python3 -c "import rocpd; print('OK')"
 ```
 
-If there's still an `ImportError`, check that the module is compatible with your Python version. The `_ncu_report*.so` compiled extension alongside `ncu_report.py` is built for one specific Python version.
+If still broken, fall back to plain `sqlite3` — the `.db` file uses the open `rocpd` schema and you don't need the helper:
+```python
+import sqlite3, pandas as pd
+con = sqlite3.connect("trace_<tag>/<run>.db")
+print(pd.read_sql("SELECT name FROM sqlite_master WHERE type='table'", con))
+```
 
 ---
 
-## TVM-FFI specific
+## Triton-AMD specific
 
-### "I can't profile my kernel, it's built by `tvm_ffi.cpp.build`"
+### "I can't profile my Triton kernel"
 
-- Locate the cached `.so` and `kernel.cu`:
-  ```
-  ~/.cache/flashinfer_bench/cache/tvm_ffi/<solution_hash>/
-  ```
-- You'll see `build.ninja` with the nvcc invocation — note it does *not* include `-lineinfo`.
-- **Workaround:** build a standalone harness from the cached `kernel.cu` (see `02-harness-guide.md`).
-- **Alternative:** inject `-lineinfo` into `build.ninja` and recompile manually. But this breaks on the next TVM rebuild.
+- Set `MLIR_ENABLE_DUMP=1` (or `TRITON_KERNEL_DUMP=1` depending on Triton version) to dump the lowered HIP source.
+- Locate the cached HSACO under `~/.triton/cache/<hash>/`.
+- Build a standalone harness from the dumped source — that's the only reliable way to get `-gline-tables-only` source attribution.
+- For Triton-emitted kernel names, demangling sometimes reveals long auto-generated symbols. `rocprofv3 --kernel-trace` (no regex) is the easiest way to see the actual symbol used.
 
-### "The Python benchmarking script runs but ncu sees no matching kernel"
+### "Triton kernel name changes between runs"
 
-`-k "regex:..."` must match the demangled name. TVM-FFI wraps kernels in `__global__ void kernel(...)` with a fixed name — check with `cuobjdump --dump-function-names <path to .so>`.
+Triton recompiles when input shapes / dtypes change. Pin one launch with fixed shapes, or compile once with `triton.compile(...)` and reuse.
 
 ---
 
-## PyTorch specific
+## PyTorch + ROCm specific
 
-### Profiling a PyTorch model's kernel
+### Profiling a PyTorch op's underlying kernel
 
-1. Identify the kernel. Use `torch.profiler` to name it, or look for the generated kernel from `torch.compile`.
-2. The kernel is often auto-generated (Triton, CUTLASS, cuDNN). For Triton kernels specifically, Triton recompiles between runs and the kernel name changes. Profile a single script invocation.
-3. For `torch.compile`-generated Triton, inspect `TORCH_LOGS=+dynamo` or `TORCH_COMPILE_DEBUG=1` to see the emitted code.
+1. Identify the kernel: `torch.profiler` with `activities=[torch.profiler.ProfilerActivity.CUDA]` (yes, `CUDA` — PyTorch's ROCm build uses the same enum) names it.
+2. Many torch kernels on ROCm are MIOpen / hipBLASLt / Composable Kernel JIT outputs. The kernel symbol is auto-generated and not worth chasing — build a harness with the same problem size and profile that.
+3. For `torch.compile`-generated Triton-on-ROCm, same notes as Triton above.
 
-### Profiling CUDA Graph-captured kernels
+### Profiling HIP Graph-captured kernels
 
-ncu handles CUDA Graph launches fine — each captured kernel shows up as a separate "kernel launch". Use `-k` regex + `-c N` to target.
+rocprofv3 handles HIP Graph launches — each captured kernel shows up as a separate dispatch in `kernel_trace.csv`. Use `--kernel-include-regex` + `--kernel-iteration-range` to target.
 
 ---
 
@@ -154,39 +199,67 @@ ncu handles CUDA Graph launches fine — each captured kernel shows up as a sepa
 
 1. **Lock GPU clocks:**
    ```bash
-   sudo nvidia-smi -lgc <boost_clock_mhz>    # check with nvidia-smi -q -d CLOCK
+   sudo rocm-smi --setperflevel high       # max sustained clocks
    # profile
-   sudo nvidia-smi -rgc                      # unlock
+   sudo rocm-smi --resetclocks              # restore
    ```
-2. **Enable persistent mode** (avoids driver unload between invocations):
-   ```bash
-   sudo nvidia-smi -pm 1
-   ```
-3. **Pin the CUDA stream** explicitly rather than relying on default stream.
+   For more control: `sudo rocm-smi --setsclk <level>` (SCLK = shader clock) and `--setmclk <level>` (memory).
+2. **Avoid thermal throttling.** Check `rocm-smi --showtemp --showthrottle` during the run. MI300A APU variants share thermal headroom with CPU cores — pin CPU to perf governor too.
+3. **Lock GPU partitioning.** `rocm-smi --showcomputepartition --showmemorypartition` to confirm SPX/NPS1 (or whichever your prod uses); changes require a reboot to take effect.
 
 ### Reports don't match colleague's results
 
-- Check ncu version (`ncu --version`). Metric names change between major versions.
-- Check GPU driver version (`nvidia-smi`). Some metrics only exist on certain drivers.
-- Check exact nvcc invocation — a stray `-G` or missing `-lineinfo` makes a big difference.
+- Check ROCm version (`rocm-smi --showversion`, `rocprofv3 --version`, `rocprof-compute --version`). Counter names and section IDs occasionally shift.
+- Check GPU partition state at profile time (recorded in `sysinfo.csv`).
+- Check exact hipcc invocation — a stray `-O0`, missing `-gline-tables-only`, or wrong `--offload-arch` makes a big difference.
+- Check whether `--roofline` was run; SoL percentages are normalized against the cached roofline benchmark.
 
 ---
 
 ## Output interpretation
 
-### "`sm__throughput = X%`, is that good?"
+### "Compute SoL = X%, is that good?"
 
 It depends on the kernel type:
-- GEMM / matmul: should be 50%+ on B200. Below 30% is bad.
-- Element-wise / reduction: usually 10-30%, because they're DRAM-BW-bound.
-- Attention / recurrence kernels: varies wildly; compare against a reference implementation.
+- GEMM / MFMA-heavy: should be 60%+ on MI300X. Below 30% is bad.
+- Element-wise / reduction: usually 5-15%, because they're HBM-BW-bound — check HBM SoL instead.
+- Attention / softmax: varies wildly; compare against a reference (e.g., FlashAttention-3 on AMD).
 
-Always check Speed-of-Light alongside: `dram__bytes_read.sum.pct_of_peak_sustained_elapsed`. If DRAM is saturated, low SM throughput is expected and OK. If DRAM is idle AND SM is idle, you're latency-bound.
+Always check both SoL gaps:
+- If `HBM SoL` is high (>70%) and `Compute SoL` is low, the kernel is correctly HBM-bound — focus on reducing traffic, not raising compute.
+- If both are low, the kernel is latency-bound — look at the stall breakdown (`SQ_WAIT_INST_VMEM`, etc.).
 
-### "The details page says `Est. Speedup: X%` — is that reliable?"
+### "rocprof-compute says `Wavefront occupancy = X / 8` — is that bad?"
 
-Yes, mostly. NCU's rule engine does a reasonable job estimating individual rule impact. Caveats:
+Achieved occupancy < theoretical means waves can't all be resident — usually VGPR/AGPR or LDS pressure. Check `Launch Statistics` (§2.1.0):
+- High `VGPRs` (>128/wave) → register pressure
+- High `LDS_Per_Workgroup` (>32 KB on CDNA3, >80 KB on CDNA4) → LDS pressure
+- Non-zero `Scratch_Per_Workitem` → spill (kills perf)
 
-- The sum of all `Est. Speedup`s is usually > 100%, because rules overlap (fixing A might also help B). Don't add them.
-- Rules are per-pattern; the rule engine doesn't know which one is hardest/easiest to fix in your codebase.
-- Use `Est. Speedup: X%` to rank patterns by magnitude; use your judgement for ease of implementation.
+Fix: shrink VGPR with `__launch_bounds__`, refactor to use AGPR for MFMA accumulators (CDNA3+), pad/cut LDS allocation, hoist loop-invariants out of the kernel.
+
+### "All my MFMA counters are 0"
+
+Either:
+1. The compiler didn't emit MFMA — check the ISA: `llvm-objdump --disassemble --arch=gfx942 harness | grep -i mfma`.
+2. The PMC group containing `SQ_INSTS_MFMA_*` wasn't collected. Rerun rocprof-compute or add `--pmc SQ_INSTS_MFMA`.
+3. You're using Composable Kernel / hipBLASLt but profiling a wrapper that calls them indirectly — make sure the regex matches the actual MFMA-emitting kernel, not the launcher.
+
+---
+
+## ROCm version & hardware compatibility quick reference
+
+| Feature | Min ROCm | Notes |
+|---|---|---|
+| `rocprofv3` | 6.2 | Default profiling tool from 6.2 forward |
+| `rocprof-compute` | 6.3 | Formerly Omniperf, formerly Omnitrace |
+| ATT / SQTT | 6.0 (rocprof) / 6.2 (rocprofv3) | Capture per SE/CU |
+| PC sampling (host-trap) | 6.2 | MI200+ |
+| PC sampling (stochastic) | 6.3 | MI300+ |
+| Rocpd `.db` default | 7.0 | Single SQLite vs many CSVs |
+| MI300X (gfx942) discrete | 6.0 | Full support |
+| MI300A APU (gfx942 APU) | 6.0 | Shares counters with discrete; xGMI traffic visible |
+| MI355X (gfx950) | **7.0** | 6.x will refuse `--offload-arch=gfx950` |
+| FP4 / FP6 / MXFP MFMA counters | 7.0 + gfx950 | CDNA4 only |
+| ROCprof Compute Viewer | 6.3 | GUI for rocprof-compute output |
+| RGP (Radeon GPU Profiler) | n/a | **Does NOT support CDNA / Instinct.** Use ROCprof Compute Viewer instead. |

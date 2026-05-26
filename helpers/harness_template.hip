@@ -1,14 +1,27 @@
 // ============================================================================
-// harness_template.cu — starting point for a profiling harness.
+// harness_template.hip — starting point for an AMD profiling harness.
 //
 // Copy this file into your run directory, e.g.:
-//     profile/<run_name>/harness/my_kernel_harness.cu
+//     profile/<run_name>/harness/my_kernel_harness.hip
 // and customize the sections marked with TODO(you).
 //
-// Compile with:
-//     nvcc -O2 -std=c++17 -lineinfo \
-//          -gencode=arch=compute_100,code=sm_100 \
-//          my_kernel_harness.cu -o my_kernel_harness
+// Compile with (MI300X / gfx942):
+//     hipcc -O3 -std=c++17 -gline-tables-only \
+//           --offload-arch=gfx942 \
+//           -munsafe-fp-atomics \
+//           my_kernel_harness.hip -o my_kernel_harness
+//
+// Compile with (MI355X / gfx950, ROCm 7+ required):
+//     hipcc -O3 -std=c++17 -gline-tables-only \
+//           --offload-arch=gfx950 \
+//           -munsafe-fp-atomics \
+//           my_kernel_harness.hip -o my_kernel_harness
+//
+// Fat binary (both):
+//     hipcc -O3 -std=c++17 -gline-tables-only \
+//           --offload-arch=gfx942 --offload-arch=gfx950 \
+//           -munsafe-fp-atomics \
+//           my_kernel_harness.hip -o my_kernel_harness
 //
 // Usage modes this template supports:
 //     ./harness --workload <path.safetensors>        # real tensor values
@@ -17,9 +30,9 @@
 // Why it's structured this way: see ../reference/02-harness-guide.md
 // ============================================================================
 
-#include <cuda_bf16.h>
-#include <cuda_fp16.h>
-#include <cuda_runtime.h>
+#include <hip/hip_runtime.h>
+#include <hip/hip_bf16.h>
+#include <hip/hip_fp16.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -34,32 +47,37 @@
 #include "safetensors_loader.h"
 
 // ---------------------------------------------------------------------------
-// CUDA error helpers
+// HIP error helpers
 // ---------------------------------------------------------------------------
-#define CUDA_CHECK(expr)                                                               \
-    do {                                                                               \
-        cudaError_t err = (expr);                                                      \
-        if (err != cudaSuccess) {                                                      \
-            fprintf(stderr, "CUDA error %s at %s:%d: %s\n", #expr, __FILE__, __LINE__, \
-                    cudaGetErrorString(err));                                          \
-            std::exit(1);                                                              \
-        }                                                                              \
+#define HIP_CHECK(expr)                                                                 \
+    do {                                                                                \
+        hipError_t err = (expr);                                                        \
+        if (err != hipSuccess) {                                                        \
+            fprintf(stderr, "HIP error %s at %s:%d: %s\n", #expr, __FILE__, __LINE__,   \
+                    hipGetErrorString(err));                                            \
+            std::exit(1);                                                               \
+        }                                                                               \
     } while (0)
 
 template <typename T>
 static T* alloc_device(size_t n) {
     T* p = nullptr;
-    CUDA_CHECK(cudaMalloc(&p, n * sizeof(T)));
+    HIP_CHECK(hipMalloc(&p, n * sizeof(T)));
     return p;
 }
 
 // ---------------------------------------------------------------------------
 // Synthetic fill helpers — replace scale with something sensible for your kernel
 // ---------------------------------------------------------------------------
-static void fill_bf16_random(std::vector<__nv_bfloat16>& h, uint64_t seed, float scale = 0.5f) {
+static void fill_bf16_random(std::vector<__hip_bfloat16>& h, uint64_t seed, float scale = 0.5f) {
     std::mt19937_64 rng(seed);
     std::uniform_real_distribution<float> d(-scale, scale);
     for (auto& x : h) x = __float2bfloat16(d(rng));
+}
+static void fill_f16_random(std::vector<__half>& h, uint64_t seed, float scale = 0.5f) {
+    std::mt19937_64 rng(seed);
+    std::uniform_real_distribution<float> d(-scale, scale);
+    for (auto& x : h) x = __float2half(d(rng));
 }
 static void fill_f32_random(std::vector<float>& h, uint64_t seed, float scale = 0.5f) {
     std::mt19937_64 rng(seed);
@@ -71,19 +89,25 @@ static void fill_f32_random(std::vector<float>& h, uint64_t seed, float scale = 
 // TODO(you): paste / include the kernel source here
 //
 //   - Include any __device__ helpers, intrinsics, and constants.
-//   - Use `extern "C"` or plain C++ — ncu picks up either.
-//   - Add explicit template instantiations for every variant you want
-//     to be able to target with `ncu -k "regex:..."`.
+//   - HIP supports `__launch_bounds__(maxThreadsPerBlock, minBlocksPerMultiprocessor)`
+//     to budget VGPR — use it rather than searching for `--maxregcount` (no equivalent).
+//   - Wave size on CDNA is 64 (compile-time `warpSize`).
+//   - Add explicit template instantiations for every variant you want to be
+//     able to target with `rocprofv3 --kernel-include-regex "..."`.
 //
 // Example:
-//     template<int TILE_M, int TILE_N>
-//     __global__ void my_kernel(const float* A, const float* B, float* C, int M, int N, int K) {
+//     template <int TILE_M, int TILE_N>
+//     __global__ __launch_bounds__(256, 2)
+//     void my_kernel(const __hip_bfloat16* A, const __hip_bfloat16* B,
+//                    float* C, int M, int N, int K) {
 //         // ... kernel body ...
 //     }
 //     // Explicit instantiations — without these, unused variants get stripped
-//     // and ncu's regex won't find them.
-//     template __global__ void my_kernel<64, 64>(const float*, const float*, float*, int, int, int);
-//     template __global__ void my_kernel<128, 64>(const float*, const float*, float*, int, int, int);
+//     // and rocprofv3's regex won't find them.
+//     template __global__ void my_kernel<64, 64>(
+//         const __hip_bfloat16*, const __hip_bfloat16*, float*, int, int, int);
+//     template __global__ void my_kernel<128, 64>(
+//         const __hip_bfloat16*, const __hip_bfloat16*, float*, int, int, int);
 // ============================================================================
 
 // ... your kernel goes here ...
@@ -92,15 +116,19 @@ static void fill_f32_random(std::vector<float>& h, uint64_t seed, float scale = 
 // TODO(you): launch helper
 //
 // Take the input pointers and shape parameters, run the kernel with the
-// chosen template parameters / grid / block. Keep this simple — a single
-// `kernel<<<grid, block>>>(...)` call.
+// chosen template parameters / grid / workgroup. Keep this simple — a single
+// `hipLaunchKernelGGL(...)` or chevron-syntax call.
 // ============================================================================
-static void launch_kernel(/* input pointers, shape params, cuda stream */) {
+static void launch_kernel(/* input pointers, shape params, hipStream_t */) {
     // dim3 grid(...);
     // dim3 block(...);
-    // my_kernel<TILE_M, TILE_N><<<grid, block>>>(A, B, C, M, N, K);
-    // CUDA_CHECK(cudaDeviceSynchronize());
-    // CUDA_CHECK(cudaGetLastError());
+    // hipLaunchKernelGGL((my_kernel<TILE_M, TILE_N>),
+    //                    grid, block, /*sharedMem*/ 0, /*stream*/ 0,
+    //                    A, B, C, M, N, K);
+    // // Or with chevron syntax (HIP supports it):
+    // // my_kernel<TILE_M, TILE_N><<<grid, block>>>(A, B, C, M, N, K);
+    // HIP_CHECK(hipDeviceSynchronize());
+    // HIP_CHECK(hipGetLastError());
 }
 
 // ============================================================================
@@ -162,8 +190,8 @@ int main(int argc, char** argv) {
     // }
 
     // --- TODO(you): copy inputs to device ----------------------------------
-    // CUDA_CHECK(cudaMemcpy(d_A, h_A.data(), h_A.size() * sizeof(float), cudaMemcpyHostToDevice));
-    // CUDA_CHECK(cudaMemcpy(d_B, h_B.data(), h_B.size() * sizeof(float), cudaMemcpyHostToDevice));
+    // HIP_CHECK(hipMemcpy(d_A, h_A.data(), h_A.size() * sizeof(float), hipMemcpyHostToDevice));
+    // HIP_CHECK(hipMemcpy(d_B, h_B.data(), h_B.size() * sizeof(float), hipMemcpyHostToDevice));
 
     // --- Launch --------------------------------------------------------------
     fprintf(stderr, "[harness] launching kernel...\n");
@@ -171,9 +199,9 @@ int main(int argc, char** argv) {
     fprintf(stderr, "[harness] done.\n");
 
     // --- Cleanup -------------------------------------------------------------
-    // CUDA_CHECK(cudaFree(d_A));
-    // CUDA_CHECK(cudaFree(d_B));
-    // CUDA_CHECK(cudaFree(d_C));
+    // HIP_CHECK(hipFree(d_A));
+    // HIP_CHECK(hipFree(d_B));
+    // HIP_CHECK(hipFree(d_C));
 
     return 0;
 }

@@ -1,6 +1,6 @@
 # Final Report Template
 
-The report is the deliverable. Everything else (`.ncu-rep`, Python artifacts, CSVs) is evidence. Structure matters: a busy reader should see the top findings in 30 seconds and be able to drill into details if they want.
+The report is the deliverable. Everything else (rocprof-compute output dirs, ATT JSONs, CSVs) is evidence. Structure matters: a busy reader should see the top findings in 30 seconds and be able to drill into details if they want.
 
 Save as `$PROFILE_RUN_DIR/REPORT.md`.
 
@@ -11,10 +11,10 @@ Save as `$PROFILE_RUN_DIR/REPORT.md`.
 ```markdown
 # `<kernel_name>` Profiling Report
 
-**Kernel:** `<exact kernel name or template instantiation>`
-**Target GPU:** NVIDIA B200 (148 SM, CC 10.0)   (or whatever is actually being profiled)
-**Nsight Compute:** 2026.x.x
-**Compile flags:** `nvcc -O2 -std=c++17 -lineinfo -gencode=arch=compute_100,code=sm_100`
+**Kernel:** `<exact demangled kernel name or template instantiation>`
+**Target GPU:** AMD Instinct MI300X (gfx942, CDNA3, 304 CU)   (or MI355X / gfx950 / CDNA4 / 256 CU)
+**ROCm version:** 7.x (rocprofv3 X.Y, rocprof-compute X.Y)
+**Compile flags:** `hipcc -O3 -std=c++17 -gline-tables-only --offload-arch=gfx942 -munsafe-fp-atomics`
 **Profile date:** YYYY-MM-DD
 **Run directory:** `profile/<run_name>/`
 
@@ -24,35 +24,59 @@ Save as `$PROFILE_RUN_DIR/REPORT.md`.
 
 > How exactly did we get these numbers? Required for reproducibility.
 
-- Harness: `profile/<run_name>/harness/*.cu` — what it is (standalone driver / the original binary / something else). Why.
+- Harness: `profile/<run_name>/harness/*.hip` — what it is (standalone driver / the original binary / something else) and why.
 - Workloads: which real tensors / shapes were used. Cite the workload UUID or shape tuple.
-- Dispatch paths covered: list each `(SF / template params, grid, block)` combination profiled.
-- Metric-name caveats: any metric names that differ from stock NCU docs (common on B200 / sm_100).
+- Dispatch paths covered: list each `(template params, grid, workgroup)` combination profiled.
+- Counter-name caveats: any PMC names that differ from rocprof-compute docs (e.g., `TCC_EA0_*` / `TCC_EA1_*` vs `TCC_EA_*` on gfx906/908). See [`08-mi300x-mi355x-counter-names.md`](08-mi300x-mi355x-counter-names.md).
+- GPU partitioning: `SPX/NPS1` (default) or `CPX/NPS4` etc. Check with `rocm-smi --showcomputepartition --showmemorypartition`.
 
 Minimal runnable command listing:
 
-    # Compile
-    nvcc -O2 -std=c++17 -lineinfo -gencode=arch=compute_100,code=sm_100 harness.cu -o harness
+    # Compile (MI300X)
+    hipcc -O3 -std=c++17 -gline-tables-only \
+          --offload-arch=gfx942 -munsafe-fp-atomics \
+          harness.hip -o harness
 
-    # Profile (full + PM)
-    ncu --set full --section PmSampling --section PmSampling_WarpStates \
-        -k "regex:<kernel_regex>" -c 1 \
-        -o profile/<run_name>/reports/full_<tag> \
-        profile/<run_name>/harness/harness [args]
+    # 1. Kernel-trace overview (cheap, no PMC overhead)
+    rocprofv3 --kernel-trace --hip-trace --hsa-trace \
+        --kernel-include-regex "<kernel_regex>" \
+        -d profile/<run_name>/reports/trace_<tag> \
+        -- ./harness [args]
 
-    # Profile (source-level)
-    ncu --set source --section SourceCounters \
-        -k "regex:<kernel_regex>" -c 1 \
-        -o profile/<run_name>/reports/source_<tag> \
-        profile/<run_name>/harness/harness [args]
+    # 2. Section-based perf metrics (analog of `ncu --set full`)
+    rocprof-compute profile -n <run_name>_<tag> --roofline \
+        --kernel-name "<kernel_regex>" \
+        -p profile/<run_name>/reports/rpc_<tag> \
+        -- ./harness [args]
+    rocprof-compute analyze -p profile/<run_name>/reports/rpc_<tag> \
+        > profile/<run_name>/analysis/details_<tag>.txt
+
+    # 3. Per-line stall sampling (analog of `ncu --set source`)
+    rocprofv3 --pc-sampling-method host-trap \
+        --pc-sampling-interval 1000 --pc-sampling-unit cycles \
+        --kernel-include-regex "<kernel_regex>" \
+        -d profile/<run_name>/reports/pcsamp_<tag> \
+        -- ./harness [args]
 
 ### Artifacts
 
     profile/<run_name>/
-    ├── REPORT.md                       ← this file
-    ├── harness/...                     ← standalone harness
-    ├── reports/                        ← raw .ncu-rep files (re-openable with ncu-ui)
-    └── analysis/                       ← scripts + extracted metrics
+    ├── REPORT.md                           ← this file
+    ├── harness/...                         ← standalone harness
+    ├── reports/
+    │   ├── trace_<tag>/                    ← rocprofv3 kernel-trace (+ .db on ROCm 7+)
+    │   ├── rpc_<tag>/                      ← rocprof-compute profile dir
+    │   │   ├── pmc_perf.csv
+    │   │   ├── timestamps.csv
+    │   │   ├── sysinfo.csv
+    │   │   ├── SoC/{SQ,TCP,TCC_EA0,TCC_EA1,...}.csv
+    │   │   └── roofline.csv
+    │   ├── pcsamp_<tag>/                   ← PC sampling CSV
+    │   └── att_<tag>/                      ← optional ATT (one JSON per SE/CU)
+    └── analysis/                           ← scripts + extracted metrics
+        ├── details_<tag>.txt               ← `rocprof-compute analyze` dump
+        ├── metrics_key_<tag>.json
+        └── compare_<tag1>_vs_<tag2>.txt
 
 ---
 
@@ -62,45 +86,50 @@ Minimal runnable command listing:
 
 | Metric | `<tag1>` | `<tag2>` | Source |
 |---|---:|---:|---|
-| **Duration** | X µs | Y µs | `gpu__time_duration.sum` |
-| SM throughput (% peak) | X% | Y% | `sm__throughput.avg.pct_of_peak_sustained_elapsed` |
-| Memory throughput (% peak) | X% | Y% | `gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed` |
-| DRAM throughput (% peak) | X% | Y% | `dram__bytes_read.sum.pct_of_peak_sustained_elapsed` |
-| L1 hit rate | X% | Y% | `l1tex__t_sector_hit_rate.pct` |
-| L2 hit rate | X% | Y% | `lts__t_sector_hit_rate.pct` |
-| Tensor Core usage | X% | Y% | `sm__pipe_tensor_cycles_active.*` |
-| Reg / thread | X | Y | `launch__registers_per_thread` |
-| Theoretical / Achieved occupancy | X% / Y% | ... | |
-| Waves / SM | X | Y | `launch__waves_per_multiprocessor` |
+| **Duration** | X µs | Y µs | `timestamps.csv: End - Start` |
+| SoL — Compute (% peak) | X% | Y% | rocprof-compute §2.1.1 |
+| SoL — HBM (% peak) | X% | Y% | rocprof-compute §2.1.1 |
+| SoL — vL1 (TCP) | X% | Y% | rocprof-compute §2.1.1 |
+| SoL — L2 (TCC) | X% | Y% | rocprof-compute §2.1.1 |
+| HBM read BW (achieved / peak) | X / 5300 GB/s | … | `TCC_EA0_RDREQ_32B_sum + TCC_EA1_RDREQ_32B_sum` × 32 |
+| vL1 hit rate | X% | Y% | rocprof-compute §2.1.15 |
+| L2 hit rate | X% | Y% | rocprof-compute §2.1.16 |
+| MFMA busy (% peak) | X% | Y% | rocprof-compute §2.1.10 |
+| VGPR / wave | X | Y | `pmc_perf.csv: VGPRs` |
+| AGPR / wave | X | Y | `pmc_perf.csv: AGPRs` (CDNA3+) |
+| LDS / workgroup | X B | Y B | `pmc_perf.csv: LDS_Per_Workgroup` |
+| Achieved occupancy (waves/SIMD) | X / 8 | Y / 8 | rocprof-compute §2.1.2 |
+| Scratch (= register spill, bytes/wi) | X | Y | `pmc_perf.csv: Scratch_Per_Workitem` |
+| Stall: WAIT_INST_VMEM (% issue slots) | X% | Y% | rocprof-compute §2.1.13 |
 
-**One-line read:** <"The kernel runs at X% of peak SM throughput — it's latency-bound on Y, not DRAM-BW-bound."> — this is the punchline.
+**One-line read:** <"The kernel runs at X% of compute SoL — it's VMEM-wait-bound on Y, not HBM-BW-bound."> — this is the punchline.
 
 ---
 
 ## 2. Per-dimension analysis
 
-> Walk through the six analysis dimensions, cite metrics, state findings.
+> Walk through the six analysis dimensions (see [`05-analysis-dimensions.md`](05-analysis-dimensions.md)), cite counters, state findings.
 
-### 2.1 SM occupancy & launch geometry
-<grid size, block size, waves/SM, occupancy, register/shared-mem limits, wave math>
+### 2.1 CU occupancy & launch geometry
+<grid size, workgroup size, waves/CU, theoretical vs achieved occupancy, VGPR/AGPR/LDS limits, wave64 math; XCD layout (8 XCDs on MI300X, 2 IODs on MI355X) and whether grid fills them>
 
-### 2.2 Thread-block balance (tail effect)
-<per-SM active cycles, PM timeline shape, input distribution imbalance ratios>
+### 2.2 Workgroup balance (tail effect)
+<per-XCD active cycles, rocprof-compute §2.1.23 imbalance, timeseries shape, input distribution imbalance ratios>
 
 ### 2.3 Instruction-level stall analysis
-<stall breakdown %, top source-line hotspots (cite file:line + samples + stall type)>
+<stall breakdown % from §2.1.13, top source-line hotspots from PC sampling: `(file:line, Wait_Reason, sample %)`. Wait reasons to call out: WAIT_INST_VMEM, WAIT_ANY_LDS, WAIT_BARRIER, WAIT_INST_SCA, WAIT_INST_VSCRATCH>
 
-### 2.4 Tensor Core utilization
-<value or "0%, n/a">
+### 2.4 MFMA / matrix-core utilization
+<MFMA busy % from §2.1.10, instruction shape (16×16×16 BF16 / 32×32×8 / FP8 / CDNA4 FP4/FP6/MXFP), AGPR usage; or "0%, n/a — kernel is non-MFMA">
 
-### 2.5 SM utilization timeline
-<shape: flat-high / flat-low / tail / sawtooth — reference the ASCII plot in analysis/>
+### 2.5 CU timeline
+<shape: flat-high / flat-low / tail / sawtooth — reference the ASCII plot in `analysis/timeline_<tag>.txt`. Note rocprof-compute timeseries minimum interval is ~1 ms vs NVIDIA PM ~2 µs, so very-short kernels need ATT instead>
 
 ### 2.6 Memory access pattern
-<sectors/request, L1/L2 hits, DRAM throughput, store efficiency, register spill>
+<Bytes per wavefront from §2.1.11 (peak 256B for fully coalesced wave64 × dword), vL1 / L2 / HBM hit rates, per-channel HBM balance (TCC_EA0 vs TCC_EA1 — should be ~50/50), scratch traffic (= register spill, on AMD scratch lives in HBM), LDS bank conflicts (`SQ_LDS_BANK_CONFLICT`)>
 
 ### 2.7 Additional findings
-<items from NCU rule engine not otherwise mentioned — each with the rule's `Est. Speedup: X%`>
+<items from rocprof-compute SoL gaps not otherwise mentioned — each with the gap-to-peak %>
 
 ---
 
@@ -122,8 +151,8 @@ Minimal runnable command listing:
 <what to do, concretely, with line numbers / function names from the existing kernel>
 
 **Evidence:**
-- <metric + value>
-- <NCU rule + est. speedup>
+- <counter + value, e.g., `SQ_WAIT_INST_VMEM = 62%` of issue slots>
+- <rocprof-compute SoL gap, e.g., "Compute SoL = 18%, HBM SoL = 22% — neither resource saturated, bottleneck is stall">
 
 **Expected impact:** <X% end-to-end, Y% on the hot path>, <which workloads benefit>
 
@@ -144,6 +173,7 @@ Minimal runnable command listing:
 - What I'm sure about: <list>
 - What I'm uncertain about: <list + what would resolve the uncertainty>
 - Anything the profile couldn't answer that the user should know: <list>
+- GPU partitioning at profile time (SPX/CPX, NPS1/2/4) and whether the production setup matches.
 
 ---
 
@@ -151,24 +181,26 @@ Minimal runnable command listing:
 
     cd /abs/path/to/repo
     export PROFILE_RUN_DIR=profile/<run_name>
-    <one-block runnable script that builds the harness, runs ncu, and parses>
+    <one-block runnable script that builds the harness, runs rocprofv3 + rocprof-compute, and parses>
 ```
 
 ---
 
 ## Style rules
 
-- **Cite specific metric values for every claim.** "SM throughput X.X%" (with the actual number from your report) > "SM throughput is low".
-- **Name files and line numbers.** "Line L of `harness.cu`" (pasting the actual file/line) > a high-level description like "the main memory load".
-- **Use NCU's own estimates.** Rule-engine `Est. Speedup: X%` numbers are usually in the right ballpark — use them instead of guessing.
+- **Cite specific counter values for every claim.** "HBM BW = 3.8 / 5.3 TB/s = 72% of peak" (with the actual number from your report) > "HBM is well-utilized".
+- **Name files and line numbers.** "Line L of `harness.hip`" (pasting the actual file/line) > a high-level description like "the main memory load".
+- **Use rocprof-compute's SoL gap as the ranking signal.** Each section has a "Speed-of-Light" line that names the bottleneck subsystem and a numeric gap to peak — this is the AMD analog of NCU's `Est. Speedup` rule. Use it instead of guessing.
 - **Rank by magnitude.** Fix the 50% problem before the 5% problem.
 - **Keep the top-line summary dense.** A reader should be able to get the #1 finding in 10 seconds of reading.
-- **Link to artifacts.** Don't paste huge tables into the prose — link to `analysis/compare_<tag1>_vs_<tag2>.txt` etc.
+- **Link to artifacts.** Don't paste huge tables into the prose — link to `analysis/compare_<tag1>_vs_<tag2>.txt`, `analysis/details_<tag>.txt`, etc.
+- **Always include GPU + partitioning context.** A "300% better than baseline" claim on CPX/NPS4 means nothing if the baseline was SPX/NPS1.
 
 ## Anti-patterns
 
-- ❌ Generic advice without evidence ("you might consider using shared memory").
+- ❌ Generic advice without evidence ("you might consider using LDS").
 - ❌ More than 5 "priorities" — you're probably padding.
 - ❌ Re-running the same profile with different tags and copy-pasting the same analysis — consolidate.
-- ❌ Reporting from the CLI table directly. Extract, interpret, write — don't dump.
+- ❌ Reporting from the rocprof-compute terminal table directly. Extract, interpret, write — don't dump.
 - ❌ Omitting the setup section. Without it, nobody can reproduce or trust the numbers.
+- ❌ Confusing CDNA3 (MI300X) and CDNA4 (MI355X) counters — they share most names but differ in MFMA shapes, LDS size, FP64 throughput, and absence of Infinity Cache on CDNA4.

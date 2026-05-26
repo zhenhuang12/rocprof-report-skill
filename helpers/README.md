@@ -1,66 +1,80 @@
 # Helpers
 
-Reusable code for profiling harnesses and report analysis. See `../SKILL.md` for context.
+Reusable code for AMD profiling harnesses and rocprof / rocprof-compute report analysis. See `../SKILL.md` for context.
 
-## C++ / CUDA
+## C++ / HIP
 
 | File | Purpose |
 |---|---|
-| `harness_template.cu` | Starting point for a profiling harness. Copy into your run dir, fill in the `TODO(you)` sections. |
-| `safetensors_loader.h` | Header-only safetensors reader (no external deps). Use from your harness to load real workload tensors. |
+| `harness_template.hip` | Starting point for an AMD profiling harness. Copy into your run dir, fill in the `TODO(you)` sections. |
+| `safetensors_loader.h` | Header-only safetensors reader (no external deps). Vendor-neutral — works on NVIDIA / AMD / CPU. |
 
 ### Typical harness setup
 
 ```bash
 cd profile/<run_name>/harness/
-cp /path/to/skills/kernel-profiling/helpers/harness_template.cu my_kernel_harness.cu
-cp /path/to/skills/kernel-profiling/helpers/safetensors_loader.h .
-# edit my_kernel_harness.cu to include your kernel + fill in main()
-nvcc -O2 -std=c++17 -lineinfo -gencode=arch=compute_100,code=sm_100 \
-     my_kernel_harness.cu -o my_kernel_harness
+cp /path/to/skills/ncu-report-skill/helpers/harness_template.hip my_kernel_harness.hip
+cp /path/to/skills/ncu-report-skill/helpers/safetensors_loader.h .
+# edit my_kernel_harness.hip to include your kernel + fill in main()
+hipcc -O3 -std=c++17 -gline-tables-only \
+      --offload-arch=gfx942 -munsafe-fp-atomics \
+      my_kernel_harness.hip -o my_kernel_harness
 ```
+
+For MI355X (gfx950), use `--offload-arch=gfx950` and ROCm 7+.
 
 ## Python
 
 | File | Purpose |
 |---|---|
-| `ncu_utils.py` | Shared helpers: `load_report`, `safe`, `per_pc_values`, `B200_KEY_METRICS`, `rule_speedups`, ... |
-| `analyze_reports.py` | Extract key metrics + side-by-side comparison from one or more `.ncu-rep`s |
-| `extract_stall_hotspots.py` | Aggregate per-PC stall samples → per-source-line rankings (requires source-level report) |
-| `plot_timeline.py` | ASCII plot PM sampling timelines (reveals tail effect, pipeline bubbles) |
+| `rocprof_utils.py` | Shared helpers: `load_rpc_dir`, `safe_col`, `key_counters_for_arch`, `dump_all_counters`, `MI300X_KEY_COUNTERS`, `MI355X_KEY_COUNTERS`, `per_kernel_durations_from_db`, ... |
+| `analyze_reports.py` | Extract key counters + side-by-side comparison from one or more rocprof-compute output dirs |
+| `extract_stall_hotspots.py` | Aggregate PC-sampling CSV (or ATT JSON) → per-source-line rankings by Wait_Reason (requires `-gline-tables-only`) |
+| `plot_timeline.py` | ASCII plot rocprof-compute timeseries CSV / per-CU distribution (reveals tail effect, pipeline bubbles, workgroup imbalance) |
 | `list_flashinfer_workloads.py` | Browse a flashinfer-trace dataset: show axes, histogram workload shapes, print safetensors paths for specific UUIDs |
 
 ### Typical Python workflow
 
 ```bash
 export PROFILE_RUN_DIR=profile/<run_name>
-HELPERS=/path/to/skills/kernel-profiling/helpers
+HELPERS=/path/to/skills/ncu-report-skill/helpers
 export FIB_DATASET_PATH=/path/to/flashinfer-trace  # if using FIB workloads
 
 # (Optional) Browse workload shapes for a flashinfer-trace dataset
 python3 $HELPERS/list_flashinfer_workloads.py --definition <def_name>
 python3 $HELPERS/list_flashinfer_workloads.py --definition <def_name> --unique-axes <axis1>,<axis2> --no-paths
 
-# Extract key metrics for each report
+# Extract key counters for each rocprof-compute report
 python3 $HELPERS/analyze_reports.py --run-dir $PROFILE_RUN_DIR \
-    --report $PROFILE_RUN_DIR/reports/full_<tag1>.ncu-rep --tag <tag1> \
-    --report $PROFILE_RUN_DIR/reports/full_<tag2>.ncu-rep --tag <tag2>
+    --rpc $PROFILE_RUN_DIR/reports/rpc_<tag1> --tag <tag1> \
+    --rpc $PROFILE_RUN_DIR/reports/rpc_<tag2> --tag <tag2> \
+    --kernel "my_kernel_regex" --arch gfx942
 
-# Per-line stall hotspots (requires source-level reports, collected with --set source)
+# Per-line stall hotspots from PC sampling
 python3 $HELPERS/extract_stall_hotspots.py --run-dir $PROFILE_RUN_DIR \
-    --report $PROFILE_RUN_DIR/reports/source_<tag1>.ncu-rep --tag <tag1> \
-    --report $PROFILE_RUN_DIR/reports/source_<tag2>.ncu-rep --tag <tag2>
+    --pcsamp $PROFILE_RUN_DIR/reports/pcsamp_<tag1>/pc_sampling_host_trap_v0.csv --tag <tag1> \
+    --pcsamp $PROFILE_RUN_DIR/reports/pcsamp_<tag2>/pc_sampling_host_trap_v0.csv --tag <tag2>
 
-# ASCII PM timeline plots
+# Or ATT-based hotspots
+python3 $HELPERS/extract_stall_hotspots.py --run-dir $PROFILE_RUN_DIR \
+    --att-dir $PROFILE_RUN_DIR/reports/att_<tag> --tag <tag>
+
+# ASCII timeline plots — needs --timeseries-sampling-rate at collection time
 python3 $HELPERS/plot_timeline.py --run-dir $PROFILE_RUN_DIR \
-    --report $PROFILE_RUN_DIR/reports/full_<tag1>.ncu-rep --tag <tag1> \
-    --report $PROFILE_RUN_DIR/reports/full_<tag2>.ncu-rep --tag <tag2>
+    --timeseries $PROFILE_RUN_DIR/reports/rpc_ts_<tag>/pmc_perf_timeseries.csv --tag <tag>
+
+# Per-CU distribution (no timeseries needed)
+python3 $HELPERS/plot_timeline.py --run-dir $PROFILE_RUN_DIR \
+    --rpc $PROFILE_RUN_DIR/reports/rpc_<tag> --tag <tag> --per-cu
 ```
 
-All three scripts take `--run-dir` and write under `<run-dir>/analysis/`.
+All scripts take `--run-dir` and write under `<run-dir>/analysis/`.
 
-`ncu_utils.py` tries to auto-locate `ncu_report` from common CUDA install paths. If that fails, set `PYTHONPATH`:
+### Dependencies
 
 ```bash
-export PYTHONPATH=$PYTHONPATH:/usr/local/cuda-13.2/nsight-compute-2026.1.0/extras/python
+python3 -m pip install --user pandas
+# Optional (ROCm 7+ rocpd Python helper):
+#   /opt/rocm-7.0.0/share/rocprofiler-sdk/python/rocpd
+#   (rocprof_utils.py falls back to plain sqlite3 if rocpd isn't importable)
 ```

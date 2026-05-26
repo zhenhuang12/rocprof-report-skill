@@ -5,100 +5,113 @@ Every kernel profile report is ambiguous until you look at it through specific l
 For each dimension this doc describes:
 
 - **What you're answering**
-- **Which metrics to read** (B200 / sm_100 names)
+- **Which counters to read** (gfx942 / gfx950 names — see [`08-mi300x-mi355x-counter-names.md`](08-mi300x-mi355x-counter-names.md) for the full inventory)
 - **How to read them** (what's "normal", what's "bad")
 - **Which `helpers/` to run**
 
 ---
 
-## Dimension 1 — SM occupancy & launch geometry
+## Dimension 1 — CU occupancy & launch geometry
 
-**What:** is the grid large enough to fill the GPU? Is occupancy being limited by registers, shared memory, or block-size constraints?
+**What:** is the grid large enough to fill the GPU? Is occupancy being limited by VGPR/AGPR, LDS, or workgroup-size constraints?
 
-**Metrics:**
+**Counters (rocprof-compute section 2.1.0, 2.1.2):**
 ```
-launch__grid_size
-launch__block_size
-launch__grid_dim_x / _y / _z
-launch__waves_per_multiprocessor
-launch__registers_per_thread
-launch__shared_mem_per_block
-launch__occupancy_limit_blocks
-launch__occupancy_limit_registers
-launch__occupancy_limit_shared_mem
-launch__occupancy_limit_warps
-device__attribute_multiprocessor_count         (148 on B200)
-sm__maximum_warps_per_active_cycle_pct          (theoretical occupancy %)
-sm__warps_active.avg.pct_of_peak_sustained_active  (achieved occupancy %)
+Grid_Size, Workgroup_Size (each dim)
+Wave_Size                                       # 64 on CDNA gfx9
+VGPRs (per work-item)
+SGPRs (per wavefront)
+AGPRs (per work-item) — used as MFMA accumulators on CDNA3 (gfx942) when present
+LDS_Per_Workgroup (bytes, statically + dynamically allocated)
+Scratch_Per_Workitem                            # = register spill bytes (DRAM-backed)
+Wavefronts_Per_Workgroup
+Workgroups_Launched
+Achieved_Occupancy_pct                          # rocprof-compute derives this
+Theoretical_Occupancy_pct                       # from VGPR/LDS/wkg limits
+Compute_Unit_Count                              # 304 on MI300X, 256 on MI355X
+XCD_Count                                       # 8 on MI300X SPX; 1-8 depending on partition mode (MI300X) or 2 IODs (MI355X)
 ```
+
+> **CDNA3 register model:** each SIMD has 256 VGPRs **plus** 256 AGPRs (Accumulator GPRs). MFMA reads source operands from VGPR/AGPR and writes accumulator results to AGPR. CDNA3 introduced free movement between VGPR and AGPR, but the budget is *two separate pools* — a register-pressure report listing 256 "VGPRs" is hiding the AGPR half. rocprof-compute reports both.
 
 **Reading:**
 
-- **Waves / SM < 1**: grid is too small to fill the chip. On B200 with 148 SMs, if `launch__grid_size < 148 × blocks_per_SM`, some SMs sit idle the entire time. `Est. Speedup` from NCU often hits 50-90% here.
-- **Waves / SM in [1, 2)**: you have a tail wave (partial last wave). Tail effect magnitude is roughly `(last_wave_blocks / wave_size) × (block_exec_time / total_kernel_time)`.
-- **Waves / SM > 4**: grid is plenty big, scheduling averages out.
+- **Waves per CU < 1**: grid is too small to fill the chip. On MI300X with 304 CUs (SPX/NPS1), if `Workgroups_Launched < 304 × workgroups_per_CU`, some CUs sit idle the entire time. Even more brutal in NPS2/NPS4 or CPX modes where the kernel sees fewer CUs per visible GPU.
+- **Waves per CU in [1, 2)**: you have a tail wave (partial last wave). Tail effect magnitude is roughly `(last_wave_blocks / wave_size) × (block_exec_time / total_kernel_time)`.
+- **Waves per CU > 4**: grid is plenty big, scheduling averages out.
 - **Theoretical occupancy 100% but achieved << 100%**: stalls are the bottleneck, not launch config. Move to Dimension 3.
-- **Theoretical occupancy < 100% and `launch__occupancy_limit_registers` is the tightest**: reduce register usage or add `__launch_bounds__`.
-- **`launch__occupancy_limit_shared_mem`** the tightest: shared mem / block is too large, reduce tile size.
+- **Theoretical occupancy < 100% and VGPR (or AGPR) is the tightest limiter**: reduce register usage or add `__launch_bounds__`.
+- **LDS** the tightest: workgroup LDS budget too large; reduce tile size or split. Note **MI355X has 160 KB LDS/CU (2.5× MI300X's 64 KB)** — kernels written for CDNA3 can usually grow their LDS footprint on CDNA4.
 
 **Derived: wave math**
 
 ```python
-blocks_per_sm = min(occ_limit_blocks, occ_limit_registers, occ_limit_shared_mem, occ_limit_warps)
-wave_size = blocks_per_sm * num_sms
-num_waves = (total_blocks + wave_size - 1) // wave_size
-last_wave_blocks = total_blocks - (num_waves - 1) * wave_size
+waves_per_wkg = ceil(workgroup_size / 64)              # CDNA gfx9 wave = 64
+wkgs_per_cu_vgpr = min_limit_from_vgpr_budget
+wkgs_per_cu_lds  = min_limit_from_lds_budget
+wkgs_per_cu_max  = min_workgroups_per_cu_HW            # 32 on gfx942
+wkgs_per_cu = min(wkgs_per_cu_vgpr, wkgs_per_cu_lds, wkgs_per_cu_max)
+wave_size = wkgs_per_cu * num_cus                       # global concurrent wkgs
+num_waves = ceil(total_workgroups / wave_size)
+last_wave_blocks = total_workgroups - (num_waves - 1) * wave_size
 last_wave_utilization_pct = last_wave_blocks / wave_size * 100
 ```
 
-**Helper:** `analyze_reports.py` prints all the key launch metrics under "Launch geometry" in the output txt.
+**MI300X partition note:** in SPX/NPS1 mode the kernel sees 1 GPU × 304 CU. In CPX mode it sees 8 GPUs × 38 CU each, with separate HBM partitions. Recompute the wave math against the partition the run actually used. `rocm-smi --showpartition` + `rocminfo` confirm the active mode.
+
+**Helper:** `analyze_reports.py` prints all the key launch counters under "Launch geometry" in the output txt.
 
 ---
 
-## Dimension 2 — Thread-block balance (tail effect)
+## Dimension 2 — Workgroup balance (tail effect)
 
-**What:** are blocks finishing at roughly the same time, or do a few outliers drag out the kernel?
+**What:** are workgroups finishing at roughly the same time, or do a few outliers drag out the kernel?
 
-**Metrics:**
-
-There is no single "imbalance" metric — use these signals together:
+**Counters / signals:**
 
 ```
-# Per-SM active-cycle distribution (from MemoryWorkloadDistribution section)
-# These show as "max XX% above average, min YY% below average" in details page
-sm__cycles_active.{avg,max,min,sum}       # via action.source_info or the details page
+# Per-CU active-cycle distribution (from rocprof-compute section 2.1.23 if present;
+# otherwise compute from per-CU SQ_BUSY_CYCLES if you collect that PMC)
+SQ_BUSY_CYCLES (per CU)
+GRBM_GUI_ACTIVE                       # global active cycles
+GRBM_CP_BUSY                          # cmd-processor busy
+GRBM_SPI_BUSY                         # shader-pipe input busy (workgroup scheduling)
 
-# PM sampling (time series) — the shape matters, not just the mean
-pmsampling:smsp__warps_issue_stalled_long_scoreboard.avg
-pmsampling:smsp__warps_issue_stalled_short_scoreboard.avg
-pmsampling:smsp__warps_issue_stalled_wait.avg
+# Timeseries (rocprof-compute --timeseries-sampling-rate)
+SQ_WAVES                              # rises with workgroup dispatch, falls with completion
+SQ_INSTS_VALU
+SQ_WAIT_INST_VMEM
+SQ_WAIT_INST_LDS
+
+# ATT timeline (gold standard but only covers the captured CUs)
 ```
 
 **Reading:**
 
-- NCU's `details` page already says it: `"One or more SMs have a much lower number of active cycles than the average. Maximum instance value is X% above, while the minimum is Y% below."` X=51% / Y=95% (seen in practice) means severe imbalance.
-- Render the PM-sampling time series (use `plot_timeline.py`). Possible shapes:
-  - **Flat high → clean drop**: ideal. Well-balanced, good SM fill.
-  - **Flat high → gradual tail**: tail effect. The tail's length is how much time a few slow blocks waste. Usually caused by variable-length inputs (e.g. seq_len varies per batch element).
+- rocprof-compute's workgroup-balance section already says it: `"max workgroup duration: X µs, min: Y µs, std: Z"`. A max/min ratio > 5× is severe imbalance.
+- Render the timeseries PMC (use `plot_timeline.py`). Possible shapes:
+  - **Flat high → clean drop**: ideal. Well-balanced, good CU fill.
+  - **Flat high → gradual tail**: tail effect. The tail's length is how much time a few slow workgroups waste. Usually caused by variable-length inputs (e.g. seq_len varies per batch element).
   - **Flat low**: grid is too small (Dimension 1).
   - **Periodic waves / sawtooth**: pipeline bubbles — compute and memory alternate, nothing overlaps.
+- **Per-XCD imbalance on MI300X**: in SPX/NPS1, the host-side dispatcher round-robins workgroups across 8 XCDs. If your work has a few very heavy workgroups, they will cluster on the XCD that drew them. Look at SQ_WAVES per XCD over time — divergence > 30% between fastest and slowest XCD wastes one full XCD's compute.
 
 **Where imbalance typically comes from:**
 
-1. **Variable-length per-CTA work**: when each CTA's iteration count depends on an input axis (e.g., per-element lengths driven by a prefix-sum / cumulative-length array), CTAs take very different times.
-2. **Branch-and-early-exit inside the kernel**: some blocks bail early via `return`, others don't.
-3. **Work-stealing without proper load balancing**: custom scheduling logic that happens to assign heavy work to a few blocks.
+1. **Variable-length per-workgroup work**: when each workgroup's iteration count depends on an input axis (e.g., per-element lengths driven by a prefix-sum / cumulative-length array), workgroups take very different times.
+2. **Branch-and-early-exit inside the kernel**: some workgroups bail early via `return`, others don't.
+3. **XCD locality on MI300X**: when one XCD's L2 / Infinity Cache has the hot data and others miss to HBM, the missing XCDs run slower.
+4. **NPS4 / CPX mode**: each visible "GPU" has its own HBM stack — a workgroup that needs cross-stack data pays XGMI hop cost (and the dispatcher cannot rebalance across these visible GPUs).
 
-**Fix direction:** chunk the variable-length work (e.g., time-chunking for sequence-style workloads), or oversubscribe with work-stealing.
+**Fix direction:** chunk the variable-length work (e.g., time-chunking for sequence-style workloads), or oversubscribe with persistent-kernel work-stealing.
 
 **Helper:** `plot_timeline.py` produces ASCII timeline plots. If you see a gradual slope on the right side, that's your tail effect.
 
-Additionally, **always inspect the input distribution**. If per-CTA work is driven by an array like `per_element_lengths`:
+Additionally, **always inspect the input distribution**. If per-workgroup work is driven by an array like `per_element_lengths`:
 ```python
-# Example: given a per-CTA work-count array, compute imbalance ratios
-work_per_cta = [...]  # derive this from whatever drives the inner loop count
-avg = sum(work_per_cta) / len(work_per_cta)
-print(f"max/avg = {max(work_per_cta)/avg:.2f}x, max/min = {max(work_per_cta)/min(work_per_cta):.2f}x")
+work_per_wkg = [...]  # derive this from whatever drives the inner loop count
+avg = sum(work_per_wkg) / len(work_per_wkg)
+print(f"max/avg = {max(work_per_wkg)/avg:.2f}x, max/min = {max(work_per_wkg)/min(work_per_wkg):.2f}x")
 ```
 
 Ratios > 5x indicate significant potential for tail effect.
@@ -107,101 +120,134 @@ Ratios > 5x indicate significant potential for tail effect.
 
 ## Dimension 3 — Stall reason breakdown + per-line hotspots
 
-**What:** when warps aren't issuing, what are they waiting for? Which source lines generate the most stalls?
+**What:** when waves aren't issuing, what are they waiting for? Which source lines generate the most stalls?
 
-**Aggregate stall metrics (SOL-adjacent, aggregated over the kernel):**
+**Aggregate wait counters (rocprof-compute section 2.1.13):**
 ```
-# Ratio per issued warp — how many of 16 active warps are in each stall state
-smsp__average_warps_issue_stalled_long_scoreboard_per_issue_active.ratio
-smsp__average_warps_issue_stalled_short_scoreboard_per_issue_active.ratio
-smsp__average_warps_issue_stalled_wait_per_issue_active.ratio
-smsp__average_warps_issue_stalled_math_pipe_throttle_per_issue_active.ratio
-smsp__average_warps_issue_stalled_mio_throttle_per_issue_active.ratio
-smsp__average_warps_issue_stalled_lg_throttle_per_issue_active.ratio
-smsp__average_warps_issue_stalled_barrier_per_issue_active.ratio
-smsp__average_warps_issue_stalled_not_selected_per_issue_active.ratio
-smsp__average_warps_issue_stalled_dispatch_stall_per_issue_active.ratio
-smsp__average_warps_issue_stalled_no_instruction_per_issue_active.ratio
-```
+# "stall cycles" — number of cycles a wave was waiting on the named resource
+SQ_WAIT_INST_VMEM                     # waiting on vector memory (global load/store, L1)
+SQ_WAIT_INST_LDS                      # waiting on LDS instruction issue
+SQ_WAIT_ANY_LDS                       # waiting on any LDS dependency (bank conflicts surface here)
+SQ_WAIT_INST_SCA                      # waiting on scalar memory
+SQ_WAIT_INST_FLAT                     # waiting on FLAT (generic) memory
+SQ_WAIT_INST_EXP                      # waiting on export (mostly pixel/vertex, rare in compute)
+SQ_WAIT_BARRIER                       # waiting at s_barrier
+SQ_WAIT_INST_VALU                     # waiting on VALU pipe occupancy
+SQ_WAIT_INST_VSCRATCH                 # waiting on scratch (= spill traffic) — bad sign
+SQ_WAIT_VMCNT, SQ_WAIT_LGKMCNT        # waiting on the s_waitcnt counters
+SQ_WAIT_ANY                           # any wait
 
-**Per-line stall metrics (from `--set source`):**
-```
-smsp__pcsamp_sample_count                                  # total samples
-smsp__pcsamp_warps_issue_stalled_long_scoreboard           # per-PC counts
-smsp__pcsamp_warps_issue_stalled_short_scoreboard
-smsp__pcsamp_warps_issue_stalled_wait
-smsp__pcsamp_warps_issue_stalled_selected                  # productive cycles
-...
+# Issue / activity
+SQ_INSTS_VALU
+SQ_INSTS_MFMA
+SQ_INSTS_VMEM_RD, SQ_INSTS_VMEM_WR
+SQ_INSTS_LDS
+SQ_BUSY_CYCLES, SQ_ACTIVE_INST_VALU
 ```
 
-**Stall reasons you need to know:**
+**Per-PC wait metrics (from `rocprofv3 --pc-sampling-method host-trap` or ATT):**
 
-| Reason | Meaning | Typical cause | Fix direction |
-|---|---|---|---|
-| `long_scoreboard` | waiting on long-latency dep | global memory load hasn't returned | coalesce, reuse, add ILP |
-| `short_scoreboard` | waiting on short-latency dep | shared/local memory, or compute chain | add ILP, shorten dep chains |
-| `wait` | waiting on fixed-latency pipe | SFU / tensor-core output | more independent ops in flight |
-| `barrier` | `__syncthreads` / mbarrier wait | other threads haven't arrived | reduce syncs, fix divergence |
-| `membar` | memory fence | `__threadfence` | avoid if possible |
-| `math_pipe_throttle` | FMA pipe saturated | legit compute-bound | you're doing well, find other wins |
-| `mio_throttle` / `lg_throttle` / `tex_throttle` | LSU/LD-ST/TEX pipe saturated | too many load/store insns | vectorize, use shared mem |
-| `not_selected` | eligible but scheduler picked another | **good sign** — plenty of parallelism | ignore |
-| `selected` | actually issuing this cycle | **productive** | ignore |
-| `dispatch_stall` | dispatch unit busy | rare | usually minor |
-| `no_instruction` | warp has nothing to issue | kernel prologue/epilogue | usually minor |
-| `drain` | warp finishing last few instructions | end of kernel | ignore |
-| `branch_resolving` | branch target calc in progress | tight branches | usually minor |
+PC sampling output is a CSV with one row per sample. Aggregate by `Wait_Reason` (an enum string) and by `Source` (file:line) — see [`04-python-api.md`](04-python-api.md) example.
 
-**Reading the ratio metric:** a value of e.g. `smsp__average_warps_issue_stalled_long_scoreboard_per_issue_active.ratio = R` means: for every cycle in which a warp issues, R other warps (on that SM sub-partition, per cycle-with-an-issue) were stalled on `long_scoreboard`. Higher values = more stalled time. On a kernel with 16 active warps per scheduler, R is bounded above by ~15 (all other warps stalled on this reason).
+```
+Wait_Reason possible values (rocprofv3 PC sampling):
+WAIT_INST_VMEM        # waiting on vector memory access
+WAIT_INST_LDS         # waiting on LDS instruction
+WAIT_ANY_LDS          # waiting on LDS dependency (bank conflicts)
+WAIT_INST_SCA         # waiting on scalar memory
+WAIT_BARRIER          # waiting at barrier
+WAIT_VMCNT, WAIT_LGKMCNT
+ISSUED                # productively issuing — the "good" reason
+NOT_SELECTED          # eligible but scheduler picked another wave — good sign (plenty of parallelism)
+NO_INST               # warp prologue / drain — usually minor
+OTHER
+```
 
-**Reading the `pcsamp` percentages:** normalize by `smsp__pcsamp_sample_count` to get "% of samples stalled on X". Rules of thumb:
+**Stall reasons you need to know (approximate NVIDIA analogs in parens):**
 
-- **`long_scoreboard` > 40% of samples**: kernel is memory-latency-bound. Check Dimension 6 (access patterns) next.
-- **`short_scoreboard` > 30%**: check for long dep chains or heavy shared-memory use.
-- **`barrier` > 20%**: too much synchronization, or warp divergence before a barrier.
-- **`selected` < 10%**: very little actual issue — the whole kernel is stall-bound.
+| Reason | Meaning | Typical cause | Fix direction | NVIDIA analog |
+|---|---|---|---|---|
+| `WAIT_INST_VMEM` / `SQ_WAIT_INST_VMEM` | waiting on global / vL1 memory | uncoalesced load, latency-bound | coalesce, reuse, add ILP, use `global_load_lds` | `long_scoreboard` |
+| `WAIT_ANY_LDS` / `SQ_WAIT_ANY_LDS` | waiting on LDS dependency | LDS bank conflict, long LDS dep chain | pad LDS, swizzle, more ILP | `short_scoreboard` |
+| `WAIT_INST_LDS` / `SQ_WAIT_INST_LDS` | LDS instruction issue stall | too many LDS ops in flight | vectorize (`ds_read_b128`), shorten phases | `short_scoreboard` / `mio_throttle` |
+| `WAIT_BARRIER` / `SQ_WAIT_BARRIER` | waiting at `s_barrier` | other waves haven't arrived | reduce barriers, fix divergence | `barrier` |
+| `WAIT_INST_SCA` / `SQ_WAIT_INST_SCA` | waiting on scalar memory | scalar load latency (uniform args, constant cache) | bake to constants, prefetch | (no direct analog) |
+| `WAIT_VMCNT` | explicit `s_waitcnt vmcnt(N)` | inserted by compiler to enforce vmem ordering | unroll, more ILP between waitcnts | partly `long_scoreboard` |
+| `WAIT_LGKMCNT` | explicit `s_waitcnt lgkmcnt(N)` | LDS/GDS/Kernarg ordering | reduce LDS dep chains | (no direct analog) |
+| `WAIT_INST_VALU` | VALU pipe saturated | legit compute-bound | you're doing well, find other wins | `math_pipe_throttle` |
+| `WAIT_INST_VSCRATCH` | scratch (register spill) traffic | spilling — VGPR/AGPR over-committed | `__launch_bounds__`, split kernel | `local_ld`/`local_st` + `long_scoreboard` |
+| `NOT_SELECTED` | eligible but scheduler picked another | **good sign** — plenty of parallelism | ignore | `not_selected` |
+| `ISSUED` | actually issuing this cycle | **productive** | ignore | `selected` |
+| `NO_INST` | wave has nothing to issue | kernel prologue/epilogue | usually minor | `no_instruction` |
 
-**Helper:** `extract_stall_hotspots.py` produces `stall_hotspots_<tag>.txt` which ranks source lines by total stall samples. This directly points at the offending `LDG`, `BAR.SYNC`, or compute op in source.
+**Reading the aggregate counters:** normalize by `SQ_BUSY_CYCLES` (or `SQ_WAVES × SQ_ACTIVE_INST_VALU` for issue-relative). A value of e.g. `SQ_WAIT_INST_VMEM / SQ_BUSY_CYCLES = 0.45` means waves spent 45% of busy cycles waiting on vector memory.
+
+**Reading the PC-sampling percentages:** sum `Sample_Count` over all rows = total samples. Per-Wait_Reason fraction = "% of samples stalled on X". Rules of thumb:
+
+- **`WAIT_INST_VMEM` > 40% of samples**: kernel is memory-latency-bound. Check Dimension 6 (access patterns) next.
+- **`WAIT_ANY_LDS` > 30%**: LDS bank conflicts or long dep chains; check `SQ_LDS_BANK_CONFLICT`.
+- **`WAIT_BARRIER` > 20%**: too much synchronization, or wave divergence before a barrier.
+- **`ISSUED` < 10%**: very little actual issue — the whole kernel is stall-bound.
+
+**Helper:** `extract_stall_hotspots.py` produces `stall_hotspots_<tag>.txt` which ranks source lines by total stall samples. This directly points at the offending `global_load_dwordx4`, `s_barrier`, `ds_read_b128`, or compute op in source.
 
 ---
 
-## Dimension 4 — Tensor Core utilization
+## Dimension 4 — Matrix-Core (MFMA) utilization
 
-**What:** is the kernel using tensor cores at all? If yes, how well?
+**What:** is the kernel using Matrix Cores at all? If yes, how well?
 
-**Metrics:**
+**Counters (rocprof-compute section 2.1.10):**
 ```
-sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_elapsed      # overall TC activity
-sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_active       # per active SM cycle
-sm__pipe_tensor_subpipe_hmma_cycles_active.avg.pct_of_peak_sustained_elapsed  # BF16/FP16 MMA
-sm__pipe_tensor_subpipe_imma_cycles_active.avg.pct_of_peak_sustained_elapsed  # INT MMA
-sm__pipe_tensor_subpipe_dmma_cycles_active.avg.pct_of_peak_sustained_elapsed  # FP64 MMA
-sm__ops_path_tensor_op_hmma_src_bf16_dst_fp32_sparsity_off.avg       # BF16×BF16→FP32 ops
+SQ_INSTS_MFMA                          # total MFMA instruction count
+SQ_INSTS_VALU                          # total VALU instruction count
+SQ_INSTS_VALU_MFMA_F16                 # subtype counts (when collected)
+SQ_INSTS_VALU_MFMA_BF16                # CDNA3
+SQ_INSTS_VALU_MFMA_F32
+SQ_INSTS_VALU_MFMA_F64
+SQ_INSTS_VALU_MFMA_I8
+SQ_INSTS_VALU_MFMA_F8                  # CDNA3 (OCP-FNUZ) / CDNA4 (OCP standard FP8)
+SQ_INSTS_VALU_MFMA_MXFP                # CDNA4 (gfx950) only — block-scaled FP4/FP6
+SQ_BUSY_CYCLES, SQ_ACTIVE_INST_VALU
+GRBM_GUI_ACTIVE                        # for normalizing to total time
 ```
 
 **Reading:**
 
-- **`sm__pipe_tensor_cycles_active = 0%`**: no tensor core usage at all. For matmul-ish kernels (attention, GEMM, conv), this is almost always a missed optimization.
-- **`... = X%` but X << 50%**: tensor cores are being used but underutilized. Usually means data isn't arriving fast enough (Dimension 6) or tile sizes are wrong.
-- **`... > 50%`** on B200: kernel is doing well on the Tensor-Core front. Focus elsewhere.
+- **`SQ_INSTS_MFMA == 0`**: no Matrix Core usage at all. For matmul-ish kernels (attention, GEMM, conv), this is almost always a missed optimization.
+- **`SQ_INSTS_MFMA / SQ_INSTS_VALU > 0.1`**: MFMA is in the mix; check how dense it is over time.
+- **rocprof-compute SoL "matrix engine busy %" > 50%**: kernel is doing well on the Matrix-Core front. Focus elsewhere.
+- **MFMA busy %** much lower than expected on a matmul-ish kernel: data isn't arriving fast enough (Dimension 6) or tile sizes don't fit the MFMA shape.
 
-**Blackwell-specific note:** B200 uses 5th-gen tensor cores with `tcgen05.mma` + TMEM accumulators. Hand-rolled kernels need `tcgen05.alloc`, `tcgen05.mma`, `tcgen05.ld`, `tcgen05.dealloc` PTX. Most projects should use CUTLASS 4.x / cuBLAS instead of hand-rolling. See `../blackwell-cuda-programming.md` at the repo root.
+**MI300X (CDNA3 / gfx942) MFMA notes:**
 
-**Fix direction:** if you see 0% and the workload is matrix-multiplication-shaped, redesign around MMA. This is usually a major refactor but gives 2-10× on compute-bound paths.
+- Supported shapes: `mfma_*_{4x4x4, 16x16x4, 16x16x16, 32x32x4, 32x32x8}` for F32/F16/BF16/I8; FP8 variants via OCP-FNUZ; FP64 added.
+- Accumulators live in **AGPR** (not VGPR). When `Scratch_Per_Workitem > 0` *and* MFMA-heavy, suspect over-allocation of AGPR forcing spill.
+- Use `v_mfma_f32_32x32x8_bf16` (or `_16x16x16_bf16`) over the older 16x16x4 — same throughput per cycle but better register reuse.
+
+**MI355X (CDNA4 / gfx950) MFMA notes:**
+
+- FP4 / FP6 / MXFP added (`mfma_scale_*` with E8M0 block-exponent operand) — 8× throughput vs FP16 in best case.
+- TF32 *removed* (does not exist on CDNA4).
+- FP64 throughput **halved** vs CDNA3 — gfx950 is not the GPU for FP64-dense workloads.
+- 2:4 sparse MFMA variants added.
+- FP8 switched from OCP-FNUZ (CDNA3) to OCP standard (CDNA4); numerics differ slightly.
+
+**Fix direction:** if you see 0% MFMA and the workload is matrix-multiplication-shaped, redesign around MFMA. This is usually a major refactor but gives 2-10× on compute-bound paths. Most projects should use **Composable Kernel** (CK) or **hipBLASLt** instead of hand-rolling, the same way most NVIDIA projects use CUTLASS / cuBLAS.
 
 ---
 
-## Dimension 5 — SM utilization timeline
+## Dimension 5 — CU utilization timeline
 
-**What:** how does SM utilization vary over the kernel's lifetime?
+**What:** how does CU utilization vary over the kernel's lifetime?
 
-**Metrics (PM sampling, time-series):**
+**Counters (rocprof-compute timeseries mode):**
 ```
-pmsampling:sm__throughput.avg.pct_of_peak_sustained_elapsed
-pmsampling:sm__warps_active.avg.pct_of_peak_sustained_active
-pmsampling:dram__throughput.avg.pct_of_peak_sustained_elapsed
-pmsampling:smsp__warps_issue_stalled_long_scoreboard.avg
-pmsampling:smsp__warps_issue_stalled_short_scoreboard.avg
+GRBM_GUI_ACTIVE / GRBM_count_or_total      # global activity
+SQ_BUSY_CYCLES                              # per-CU
+SQ_WAVES                                    # in-flight waves
+SQ_WAIT_INST_VMEM, SQ_WAIT_ANY_LDS          # over time
+TCC_EA0_RDREQ_sum, TCC_EA1_RDREQ_sum        # HBM read pressure over time
 ```
 
 **Reading (timeline shapes):**
@@ -209,76 +255,102 @@ pmsampling:smsp__warps_issue_stalled_short_scoreboard.avg
 - **Flat high, clean drop**: ideal.
 - **Flat high, long tail**: tail effect (Dimension 2).
 - **Flat low**: grid too small (Dimension 1) or severely stall-bound (Dimension 3).
-- **Periodic sawtooth (compute ↕ memory)**: no compute-memory overlap — missing pipeline/double-buffering.
+- **Periodic sawtooth (compute ↕ memory)**: no compute-memory overlap — missing double-buffering / prefetch.
 - **Slow ramp up, flat middle, clean drop**: kernel has warmup work (prologue), then steady state. Usually fine.
+- **Per-XCD divergence on MI300X**: plot SQ_BUSY per XCD; > 30% gap between fastest and slowest XCD signals scheduling imbalance.
 
-**Helper:** `plot_timeline.py` — renders ASCII plots. Look at multiple series side-by-side (SM throughput + DRAM throughput + long_scoreboard stalls) to distinguish the shapes.
+**Helper:** `plot_timeline.py` — renders ASCII plots. Look at multiple series side-by-side (SQ_WAVES + HBM RDREQ + WAIT_INST_VMEM) to distinguish the shapes.
 
-**Note:** PM sampling has ~2µs interval on B200. Very short kernels (< 20 µs) produce few samples — interpret with care.
+**Note:** rocprof-compute's timeseries minimum interval is ~1 ms (much coarser than NVIDIA PM sampling's ~2 µs). For very short kernels (< 100 µs) prefer ATT for time-resolved per-CU activity; rocprof-compute timeseries is for longer kernels and full-app traces.
 
 ---
 
 ## Dimension 6 — Memory access pattern & cache efficiency
 
-**What:** are global loads coalesced? Are caches hit? Is DRAM actually busy?
+**What:** are global loads coalesced? Are caches hit? Is HBM actually busy?
 
-**Metrics:**
+**Counters (rocprof-compute sections 2.1.15, 2.1.16, 2.1.17):**
 ```
-# DRAM
-dram__bytes_read.sum
-dram__bytes_read.sum.pct_of_peak_sustained_elapsed
-dram__bytes_write.sum.pct_of_peak_sustained_elapsed
-dram__bytes_read.sum.per_second                    # achieved BW
+# HBM (TCC_EA = "Effective Address" memory subsystem; channels EA0/EA1 per XCD)
+TCC_EA0_RDREQ_sum                              # HBM read requests (count)
+TCC_EA0_RDREQ_32B_sum                          # 32B-sized read requests
+TCC_EA0_WRREQ_sum                              # HBM write requests
+TCC_EA0_WRREQ_64B_sum
+TCC_EA1_RDREQ_sum                              # second channel
+TCC_EA0_REQ                                    # all requests
+TCC_EA0_MEM_REQ_LATENCY                        # latency histogram (if collected)
+# Achieved HBM BW = (RDREQ_32B + WRREQ_64B*2) * 32 / kernel_time
 
-# L1 / L2 hit rates
-l1tex__t_sector_hit_rate.pct
-lts__t_sector_hit_rate.pct
-l1tex__t_sector_pipe_lsu_mem_global_op_ld_hit_rate.pct
-l1tex__t_sector_pipe_lsu_mem_global_op_st_hit_rate.pct
+# L2 (TCC = Texture Cache (controlled by L2 on CDNA))
+TCC_HIT, TCC_MISS                              # L2 hit/miss counts
+TCC_NORMAL_ATOMIC, TCC_NORMAL_ATOMIC_FAILED    # L2 atomic activity
+TCC_WRITEBACK                                  # L2 evictions writing back to HBM
+# L2 hit rate = TCC_HIT / (TCC_HIT + TCC_MISS)
 
-# Sectors per request (coalescing quality)
-l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum              # total sectors
-l1tex__t_requests_pipe_lsu_mem_global_op_ld.sum             # total requests
-# Compute sectors/request yourself — ideal is 4 (128B aligned load)
+# vL1 cache (TCP)
+TCP_TCC_READ_REQ_sum                           # vL1 → L2 read requests (= vL1 misses)
+TCP_TCC_WRITE_REQ_sum                          # vL1 → L2 writes
+TCP_TOTAL_READ_REQ                             # total vL1 read requests
+TCP_TOTAL_WRITE_REQ
+# vL1 hit rate = 1 - TCC_READ_REQ_sum / TOTAL_READ_REQ
 
-# Store efficiency
-smsp__sass_average_data_bytes_per_sector_mem_global_op_st.ratio  # useful bytes/sector, max 32
+# LDS
+SQ_LDS_BANK_CONFLICT                            # LDS bank conflict cycles
+SQ_INSTS_LDS                                    # LDS instruction count
+SQ_LDS_IDX_ACTIVE                               # LDS bank index active
 
-# Register spill (local memory)
-smsp__sass_inst_executed_op_local_ld.sum
-smsp__sass_inst_executed_op_local_st.sum
+# Scratch (= register spill on AMD; backed by global HBM via the scratch buffer)
+SQ_INSTS_VMEM_SCRATCH_RD, SQ_INSTS_VMEM_SCRATCH_WR   # spill traffic
+Scratch_Per_Workitem (from launch info)
 
-# Global instruction counts
-smsp__sass_inst_executed_op_global_ld.sum
-smsp__sass_inst_executed_op_global_st.sum
-smsp__sass_inst_executed_op_shared.sum                     # 0 if no shared memory
+# Global LD/ST
+SQ_INSTS_VMEM_RD, SQ_INSTS_VMEM_WR              # global instr count
+SQ_INSTS_FLAT                                    # FLAT addressing path
 ```
 
 **Reading:**
 
-- **`dram__bytes_read.sum.pct_of_peak_sustained_elapsed` ≈ 80-100%**: genuinely DRAM-bandwidth-bound. Reduce bytes / amortize reads with shared memory.
-- **`... << 10%` but kernel is slow**: *not* bandwidth-bound. It's latency-bound (Dimension 3) or compute-bound (check `sm__throughput`).
-- **`l1tex__t_sector_hit_rate.pct > 90%`**: good data locality, L1 is absorbing the reuse.
-- **`lts__t_sector_hit_rate.pct < 50%`**: L2 is being blown through, reads fall to DRAM.
-- **Sectors/request = 4.0 (ideal 128B fully-coalesced) to 5.0**: small coalescing issue but acceptable.
-- **Sectors/request > 8.0**: serious non-coalesced access — big optimization opportunity.
-- **`smsp__sass_average_data_bytes_per_sector_mem_global_op_st.ratio < 16`**: stores are using less than half of each 32B sector. Usually means only a subset of warp lanes write (e.g. `if (lane_id < 4)` patterns).
-- **`smsp__sass_inst_executed_op_local_ld.sum > 0`**: **register spill** — very bad, local memory is DRAM-backed. Reduce register pressure with `__launch_bounds__` or kernel splitting.
-- **`smsp__sass_inst_executed_op_shared.sum == 0`**: kernel uses no shared memory. Fine for element-wise kernels; often a missed optimization for data-reuse-heavy kernels.
+- **`(TCC_EA0_RDREQ_32B_sum × 32 bytes) / kernel_time / peak_HBM_BW ≈ 80-100%**: genuinely HBM-BW-bound. Reduce bytes / amortize reads with LDS or L2. Peak HBM3 BW on MI300X ≈ 5.3 TB/s (per 8-stack); peak HBM3E on MI355X ≈ 8.0 TB/s.
+- **HBM achieved BW << 10% of peak but kernel is slow**: *not* bandwidth-bound. It's latency-bound (Dimension 3) or compute-bound (check `SQ_INSTS_MFMA` + busy %).
+- **vL1 hit rate > 90%**: good data locality, vL1 is absorbing the reuse.
+- **L2 hit rate < 50%**: L2 is being blown through (or the kernel is reading something it never reuses), reads fall to HBM.
+- **Bytes per wavefront (rocprof-compute reports this in section 2.1.11)**: ideal is 256 B (= one `global_load_dwordx4` per lane × 64 lanes × 4 B). Substantially less means under-vectorization; gather/scatter; or stride > 1 access.
+- **`SQ_LDS_BANK_CONFLICT > 0`**: bank conflicts. The 32-bank LDS serializes same-bank accesses. Pad tile dims or swizzle indices. **MI355X has 160 KB LDS/CU vs 64 KB on MI300X** — padding cost is less painful on CDNA4.
+- **`SQ_INSTS_VMEM_SCRATCH_RD / SQ_INSTS_VMEM_RD > 0.01`**: **register spill** — very bad, scratch is HBM-backed. Reduce VGPR/AGPR pressure with `__launch_bounds__` or kernel splitting.
+- **`SQ_INSTS_LDS == 0`**: kernel uses no LDS. Fine for element-wise kernels; often a missed optimization for data-reuse-heavy kernels.
 
-NCU's rule engine often reports the coalescing issue directly:
+rocprof-compute's section 2.1.17 reports the HBM utilization in the same "Speed-of-Light" form NCU uses:
 ```
-OPT   Est. Speedup: 10.8%
-      The memory access pattern for global loads from L1TEX might not be optimal.
-      On average, only 7.6 of the 32 bytes transmitted per sector are utilized...
+HBM        Avg     Min     Max     Pct Peak
+Bandwidth  X TB/s  ...     ...     Y%
 ```
+
+**MI300X-specific reading:**
+
+- **Per-XCD HBM** (NPS2/NPS4 partitions): each XCD has its own HBM stack. A workgroup running on XCD-N pays cross-XCD XGMI hops if it touches data placed on XCD-M's stack. Check this with `TCC_EAi_RDREQ_sum` per channel — wildly different values across i = 0..7 means cross-XCD traffic.
+- **Infinity Cache (256 MB shared L3-ish)**: on a kernel that re-reads a working-set < 256 MB, an Infinity Cache hit (visible as TCC_HIT without going to HBM) is much cheaper than HBM. If the working set is just over 256 MB, even a tiny tiling change can swing perf hugely.
+
+**MI355X-specific reading:**
+
+- **`global_load_lds` widened to 128-bit/lane on CDNA4** — a single instruction can now move 16 B per lane directly from HBM/L2 into LDS, bypassing VGPR. If you see `SQ_INSTS_VMEM_RD` high *and* `SQ_INSTS_VALU` low on the data-loading lines, you're probably already using it.
+- **No Infinity Cache** on MI355X (CDNA4 removed it in favor of higher L2 bandwidth + HBM3E speed). Working-set-size tricks that helped on MI300X may not transfer.
+- **FP4 / FP6 / MXFP** reduce HBM BW pressure on the same workload by 2-4× relative to FP8/FP16. Look for `SQ_INSTS_VALU_MFMA_MXFP` if the kernel was written to exploit this.
+
+NCU's rule engine often reports the coalescing issue directly; rocprof-compute analogs are in section 2.1.11 ("Memory Pipe — bytes per wavefront", "Access pattern utilization"):
+```
+Memory Pipe — Bytes per wavefront                   Avg  Min  Max  Peak (256)
+  global_load_dwordx4 (vector load 16B/lane × 64)   62   16   256  256
+```
+
+A value of 62 (out of 256) means roughly 4 of 16 bytes per lane are actually used — significant coalescing problem.
 
 **Fix directions (by pattern):**
 
 - Strided access (e.g. `x[lane * stride + i]`): change the per-thread layout so lanes access contiguous elements.
 - AoS → SoA: restructure the data.
-- Sparse writes: pack writes into a single coalesced store at the end of the warp.
+- Sparse writes: pack writes into a single coalesced `global_store_dwordx4` at the end of the wave.
 - Register spill: add `__launch_bounds__`, reduce intermediate variables, or split kernel.
+- LDS bank conflict: pad to 33 (or 65) instead of 32 (or 64); or apply swizzle.
 
 ---
 
@@ -286,6 +358,6 @@ OPT   Est. Speedup: 10.8%
 
 After walking through all six, write a one-line diagnosis combining them. Structure: name the top 3–4 signals, each tied to a specific dimension. For example:
 
-> "The kernel runs at X% of peak SM throughput and Y% of peak DRAM (Dim 1, 6). Stall time is dominated by `<stall_reason>` (Z% of samples, Dim 3), concentrated on <N> source lines whose access pattern is <coalesced/uncoalesced/...> (Dim 6). The PM timeline shows <flat / tail / sawtooth> shape (Dim 2/5). Tensor cores <used / unused at W%> (Dim 4)."
+> "The kernel runs at X% of peak HBM and Y% of peak MFMA throughput (Dim 1, 6). Wait time is dominated by `WAIT_INST_VMEM` (Z% of PC samples, Dim 3), concentrated on <N> source lines whose access pattern is <coalesced/uncoalesced/...> (Dim 6). The PMC timeline shows <flat / tail / sawtooth> shape (Dim 2/5), with <even / N% imbalance across XCDs>. Matrix Cores <used / unused at W%> (Dim 4)."
 
 Fill in the X/Y/Z/W/N values and <classifications> from your own report. That sentence is the deliverable. Everything else in the report is evidence backing it.

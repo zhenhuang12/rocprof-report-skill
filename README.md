@@ -1,4 +1,5 @@
-# ncu-report-skill
+# rocprof-report-skill
+
 > [!IMPORTANT]
 > This skill is maintained as a standalone submodule of
 > [Kernel Design Agents (KDA)](https://github.com/mit-han-lab/kernel-design-agents)
@@ -7,9 +8,11 @@
 > For bug reports, feature requests, and discussions, please use the main KDA repository:
 > https://github.com/mit-han-lab/kernel-design-agents
 
-A Claude Code skill for profiling CUDA kernels with Nsight Compute on NVIDIA B200 (sm_100). Covers the full workflow: build a standalone harness, run `ncu`, parse reports with the Python API, walk through six analysis dimensions, match patterns to a diagnosis playbook, and write an evidence-backed optimization report.
+A Claude Code skill for profiling HIP / ROCm kernels with `rocprofv3` and `rocprof-compute` (formerly Omniperf) on AMD Instinct **MI300X** (gfx942 / CDNA3) and **MI355X** (gfx950 / CDNA4). Covers the full workflow: build a standalone HIP harness, run `rocprofv3` + `rocprof-compute`, parse outputs with pandas / sqlite3 / `rocpd`, walk through six analysis dimensions, match patterns to a diagnosis playbook, and write an evidence-backed optimization report.
 
-The skill is self-contained: reference docs, reusable helper scripts (harness template, safetensors loader, report-analysis Python), and a companion Blackwell programming reference all ship in this repo.
+The skill is self-contained: reference docs, reusable helper scripts (HIP harness template, safetensors loader, report-analysis Python), and a companion CDNA3 / CDNA4 programming reference all ship in this repo.
+
+> **Heritage:** this skill is a 1:1 port of the NVIDIA Nsight Compute version (`ncu-report-skill`) that targeted B200 / sm_100. The directory layout, six-dimension structure, and report template were proven on NVIDIA kernels and have been re-grounded against the AMD ROCm 7.x profiling stack here. Folder name kept as `ncu-report-skill` only to preserve existing parent-repo symlinks — the skill's actual identity is `rocprof-report-skill`.
 
 ---
 
@@ -17,28 +20,28 @@ The skill is self-contained: reference docs, reusable helper scripts (harness te
 
 ```
 .
-├── SKILL.md                          ← skill entry point (with YAML frontmatter)
-├── helpers/                          ← reusable code
-│   ├── harness_template.cu           ← standalone profiling harness template
-│   ├── safetensors_loader.h          ← header-only safetensors reader (no deps)
-│   ├── list_flashinfer_workloads.py  ← browse flashinfer-trace datasets
-│   ├── analyze_reports.py            ← extract + compare key metrics from .ncu-rep files
-│   ├── extract_stall_hotspots.py     ← per-line stall aggregation (source-level reports)
-│   ├── plot_timeline.py              ← ASCII PM-sampling timeline plots (reveals tail effects)
-│   ├── ncu_utils.py                  ← shared Python helpers, B200-compatible key metric list
+├── SKILL.md                              ← skill entry point (with YAML frontmatter)
+├── helpers/                              ← reusable code
+│   ├── harness_template.hip              ← standalone HIP profiling harness template
+│   ├── safetensors_loader.h              ← header-only safetensors reader (no deps, vendor-neutral)
+│   ├── list_flashinfer_workloads.py      ← browse flashinfer-trace datasets (vendor-neutral)
+│   ├── analyze_reports.py                ← extract + compare key metrics from rocprof-compute CSVs
+│   ├── extract_stall_hotspots.py         ← per-line stall aggregation from ATT / PC-sampling output
+│   ├── plot_timeline.py                  ← ASCII PMC-timeseries plots (reveals tail effects)
+│   ├── rocprof_utils.py                  ← shared Python helpers, MI300X / MI355X key counter list
 │   └── README.md
-├── reference/                        ← detailed reference docs
-│   ├── 00-directory-layout.md        ← profile/ directory conventions (read first)
-│   ├── 01-workflow.md                ← end-to-end profiling checklist
-│   ├── 02-harness-guide.md           ← how to build a standalone profiling harness
-│   ├── 03-collection.md              ← ncu command recipes
-│   ├── 04-python-api.md              ← ncu_report Python API patterns
-│   ├── 05-analysis-dimensions.md     ← six analysis dimensions
-│   ├── 06-diagnosis-playbook.md      ← pattern → cause → fix
-│   ├── 07-report-template.md         ← final report structure
-│   ├── 08-b200-metric-names.md       ← sm_100 metric name reference
-│   └── 09-common-issues.md           ← permissions, PM sampling, JIT toolchains, etc.
-└── blackwell-cuda-programming.md     ← companion reference: Blackwell programming principles
+├── reference/                            ← detailed reference docs
+│   ├── 00-directory-layout.md            ← profile/ directory conventions (read first)
+│   ├── 01-workflow.md                    ← end-to-end profiling checklist
+│   ├── 02-harness-guide.md               ← how to build a standalone HIP profiling harness
+│   ├── 03-collection.md                  ← rocprofv3 / rocprof-compute command recipes
+│   ├── 04-python-api.md                  ← pandas / sqlite3 / rocpd patterns
+│   ├── 05-analysis-dimensions.md         ← six analysis dimensions
+│   ├── 06-diagnosis-playbook.md          ← pattern → cause → fix
+│   ├── 07-report-template.md             ← final report structure
+│   ├── 08-mi300x-mi355x-counter-names.md ← gfx942 / gfx950 counter reference
+│   └── 09-common-issues.md               ← permissions, ATT capture, ROCm version, etc.
+└── cdna3-cdna4-hip-programming.md        ← companion: CDNA3 / CDNA4 programming principles
 ```
 
 ---
@@ -57,47 +60,43 @@ Three ways to install this skill:
 Keeps the skill version-controlled and easy to update; edits in the clone are picked up instantly.
 
 ```bash
-# Clone somewhere stable
-git clone git@github.com:DongyunZou/ncu-report-skill.git ~/workspace/ncu-report-skill
+git clone git@github.com:zhenhuang12/ncu-report-skill.git ~/workspace/rocprof-report-skill
 
-# User-level install: make the skill available in every project
 mkdir -p ~/.claude/skills
-ln -s ~/workspace/ncu-report-skill ~/.claude/skills/ncu-report-skill
+ln -s ~/workspace/rocprof-report-skill ~/.claude/skills/rocprof-report-skill
 
 # Or project-level install: scope to one repo
 cd /path/to/other-repo
 mkdir -p .claude/skills
-ln -s ~/workspace/ncu-report-skill .claude/skills/ncu-report-skill
+ln -s ~/workspace/rocprof-report-skill .claude/skills/rocprof-report-skill
 ```
 
-Pull updates with `cd ~/workspace/ncu-report-skill && git pull`. The symlinks pick up the new content automatically.
+Pull updates with `cd ~/workspace/rocprof-report-skill && git pull`. The symlinks pick up the new content automatically.
 
 ### Option 2 — Copy into place
 
-If you prefer a static copy over a symlink:
-
 ```bash
-git clone git@github.com:DongyunZou/ncu-report-skill.git /tmp/ncu
+git clone git@github.com:zhenhuang12/ncu-report-skill.git /tmp/rps
 mkdir -p ~/.claude/skills
-cp -r /tmp/ncu ~/.claude/skills/ncu-report-skill
+cp -r /tmp/rps ~/.claude/skills/rocprof-report-skill
 ```
 
-### Option 3 — Git submodule (for a project-level install committed alongside the repo)
+### Option 3 — Git submodule
 
 ```bash
 cd /path/to/other-repo
-git submodule add git@github.com:DongyunZou/ncu-report-skill.git .claude/skills/ncu-report-skill
-git commit -m "Add ncu-report-skill as a submodule"
+git submodule add git@github.com:zhenhuang12/ncu-report-skill.git .claude/skills/rocprof-report-skill
+git commit -m "Add rocprof-report-skill as a submodule"
 ```
 
 ---
 
 ## How Claude uses this skill
 
-Once installed at `~/.claude/skills/ncu-report-skill/` (or project-level), Claude Code will:
+Once installed at `~/.claude/skills/rocprof-report-skill/` (or project-level), Claude Code will:
 
 1. Advertise the skill's name + description in the system reminder of new conversations.
-2. Let the user invoke it manually via `/ncu-report-skill` or let the model invoke it with the Skill tool when the conversation matches the `description` triggers.
+2. Let the user invoke it manually via `/rocprof-report-skill` or let the model invoke it with the Skill tool when the conversation matches the `description` triggers.
 
 When invoked, Claude reads `SKILL.md`, follows its workflow (phases 0 → 6 in `reference/01-workflow.md`), and uses the helper scripts in `helpers/` as needed.
 
@@ -105,48 +104,45 @@ When invoked, Claude reads `SKILL.md`, follows its workflow (phases 0 → 6 in `
 
 ## Running the helpers directly (no Claude needed)
 
-The Python helpers work standalone for any `.ncu-rep` you have:
+The Python helpers work standalone on any rocprof / rocprof-compute output you have:
 
 ```bash
-# Make sure ncu_report is importable (the helpers try common paths automatically)
-export PYTHONPATH=$PYTHONPATH:/usr/local/cuda-13.2/nsight-compute-2026.1.0/extras/python
-
 # Create a run directory
 export RUN=/path/to/your/profile/myrun
 
-# Extract key metrics from one or more reports
-python3 ~/.claude/skills/ncu-report-skill/helpers/analyze_reports.py \
+# Extract key metrics from a rocprof-compute "profile" output directory
+python3 ~/.claude/skills/rocprof-report-skill/helpers/analyze_reports.py \
     --run-dir "$RUN" \
-    --report "$RUN/reports/full_<tag>.ncu-rep" --tag <tag>
+    --report "$RUN/reports/rpc_<tag>" --tag <tag>
 
-# Per-line stall hotspots (requires a source-level .ncu-rep)
-python3 ~/.claude/skills/ncu-report-skill/helpers/extract_stall_hotspots.py \
+# Per-line stall hotspots from ATT JSON / PC-sampling CSV
+python3 ~/.claude/skills/rocprof-report-skill/helpers/extract_stall_hotspots.py \
     --run-dir "$RUN" \
-    --report "$RUN/reports/source_<tag>.ncu-rep" --tag <tag>
+    --report "$RUN/reports/att_<tag>" --tag <tag>
 
-# ASCII PM-sampling timelines
-python3 ~/.claude/skills/ncu-report-skill/helpers/plot_timeline.py \
+# ASCII PMC-timeseries timelines
+python3 ~/.claude/skills/rocprof-report-skill/helpers/plot_timeline.py \
     --run-dir "$RUN" \
-    --report "$RUN/reports/full_<tag>.ncu-rep" --tag <tag>
+    --report "$RUN/reports/rpc_<tag>" --tag <tag>
 
 # Browse a flashinfer-trace dataset to pick workload shapes
 export FIB_DATASET_PATH=/path/to/flashinfer-trace
-python3 ~/.claude/skills/ncu-report-skill/helpers/list_flashinfer_workloads.py \
+python3 ~/.claude/skills/rocprof-report-skill/helpers/list_flashinfer_workloads.py \
     --definition <your_definition_name>
 ```
 
-The C++ harness template + safetensors loader live under `helpers/`; copy them into your profile run's `harness/` directory and fill in the kernel body. See `reference/02-harness-guide.md` for details.
+The HIP harness template + safetensors loader live under `helpers/`; copy them into your profile run's `harness/` directory and fill in the kernel body. See `reference/02-harness-guide.md` for details.
 
 ---
 
 ## Requirements
 
-- CUDA Toolkit with `nvcc` (tested with 13.2)
-- Nsight Compute CLI `ncu` (tested with 2026.1)
-- The `ncu_report` Python module (ships with Nsight Compute under `extras/python/`)
-- An NVIDIA GPU with permission to access performance counters (see `reference/09-common-issues.md` if `ncu` reports `ERR_NVGPUCTRPERM`)
+- **ROCm 6.2+** for `rocprofv3`; **ROCm 6.3+** for `rocprof-compute` (renamed from Omniperf). **ROCm 7.0+** is required if you want to target MI355X (gfx950).
+- HIP compiler `hipcc` (or `amdclang++` directly).
+- Python 3.9+ with `pandas`. For ATT GUI: install ROCprof Compute Viewer (the AMD analog of `ncu-ui`); RGP does **not** support CDNA / Instinct.
+- An AMD Instinct GPU with permission to access performance counters. On most systems, membership in the `render` group is sufficient — no root needed. See `reference/09-common-issues.md` if rocprofv3 reports missing counters or ATT capture fails.
 
-The skill is optimized for B200 / sm_100 metric names, but the workflow and helpers work on any CUDA GPU Nsight Compute supports. Metric names may differ on older GPUs (A100, H100) — see `reference/08-b200-metric-names.md` for guidance.
+The skill is optimized for MI300X (gfx942) and MI355X (gfx950) counter names, but the workflow and helpers work on any AMD GPU rocprofv3 supports. Some counter names may differ on older GPUs (gfx906 MI50, gfx908 MI100, gfx90a MI200/MI250X) — see `reference/08-mi300x-mi355x-counter-names.md` for guidance.
 
 ---
 
