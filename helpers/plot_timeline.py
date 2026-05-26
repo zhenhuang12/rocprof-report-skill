@@ -12,7 +12,9 @@ Two data sources are supported:
    sub-millisecond kernels, use ATT instead.
 
 2. **Per-CU SQ_WAVES distribution** from a regular `pmc_perf.csv`: not a
-   true timeseries, but reveals per-CU imbalance and tail effects.
+   true timeseries, but reveals per-CU imbalance and tail effects. Needs a
+   per-CU counter column (e.g. `SQ_WAVES_CU<N>`); some ROCm builds only
+   expose chip-wide aggregates, in which case this mode is a no-op.
 
 Produces `<run-dir>/analysis/timeline_plots.txt` with ASCII plots for each
 requested counter. All `--tag` runs are concatenated into the same file
@@ -25,7 +27,7 @@ Usage:
             --timeseries profile/myrun/reports/rpc_ts_<tag>/pmc_perf_timeseries.csv \\
             --tag <tag>
 
-    # Per-CU mode (uses rocprof-compute's per-CU SoC CSVs if available)
+    # Per-CU mode (uses per-CU columns in pmc_perf.csv when present)
     python3 plot_timeline.py --run-dir profile/myrun \\
             --rpc profile/myrun/reports/rpc_<tag> --tag <tag> --per-cu
 """
@@ -120,27 +122,60 @@ def plot_timeseries_csv(csv_path, counters, rows, cols):
 
 
 def plot_per_cu(rpc_dir, counters, rows, cols):
-    """Plot per-CU distribution from a rocprof-compute SoC CSV (one row per CU
-    per dispatch). Reveals workgroup imbalance even without timeseries."""
+    """Plot per-CU distribution from pmc_perf.csv. Reveals workgroup
+    imbalance even without timeseries. Two layouts are supported:
+
+    (a) a single CU index column (e.g. `CU_ID`) plus a counter column —
+        one row per CU per dispatch.
+    (b) per-CU columns suffixed with the CU index
+        (e.g. `SQ_WAVES_CU0`, `SQ_WAVES_CU1`, …) — one row per dispatch.
+
+    If neither shape is present (the build only exposes chip-wide sums),
+    returns a single explanatory line.
+    """
     rpc = Path(rpc_dir)
-    sq_csv = rpc / "SoC" / "SQ.csv"
-    if not sq_csv.exists():
-        return [f"\nper-CU mode: no SoC/SQ.csv under {rpc}"]
-    df = pd.read_csv(sq_csv)
+    pmc_csv = rpc / "pmc_perf.csv"
+    if not pmc_csv.exists():
+        return [f"\nper-CU mode: no pmc_perf.csv under {rpc}"]
+    df = pd.read_csv(pmc_csv)
+    lines = [f"\n{'=' * 60}\nper-CU: {pmc_csv}\n{'=' * 60}"]
+
     cu_col = None
     for cand in ("CU_ID", "cu_id", "Compute_Unit", "ShaderEngine_CU"):
         if cand in df.columns:
             cu_col = cand
             break
-    if cu_col is None:
-        return [f"\nper-CU mode: no CU index column found in SoC/SQ.csv (cols={df.columns.tolist()[:6]}...)"]
 
-    lines = [f"\n{'=' * 60}\nper-CU: {sq_csv}\n{'=' * 60}"]
-    for c in counters:
-        if c not in df.columns:
-            continue
-        per_cu = df.groupby(cu_col)[c].sum().sort_index()
-        lines.extend(ascii_plot(per_cu.tolist(), f"{c} per CU", rows, cols))
+    any_drawn = False
+    if cu_col is not None:
+        for c in counters:
+            if c not in df.columns:
+                continue
+            per_cu = df.groupby(cu_col)[c].sum().sort_index()
+            lines.extend(ascii_plot(per_cu.tolist(), f"{c} per CU", rows, cols))
+            any_drawn = True
+    else:
+        import re as _re
+        for c in counters:
+            pat = _re.compile(rf"^{_re.escape(c)}_CU(\d+)$")
+            per_cu_cols = sorted(
+                ((int(m.group(1)), col) for col in df.columns
+                 if (m := pat.match(col)) is not None),
+                key=lambda x: x[0],
+            )
+            if not per_cu_cols:
+                continue
+            vals = [float(df[col].sum()) for _, col in per_cu_cols]
+            lines.extend(ascii_plot(vals, f"{c} per CU", rows, cols))
+            any_drawn = True
+
+    if not any_drawn:
+        lines.append(
+            f"\nper-CU mode: no per-CU columns found in {pmc_csv}. "
+            "This build may only expose chip-wide aggregates; use "
+            "`rocprof-compute analyze --block 23` (workgroup imbalance) "
+            "or rocprofv3 --att for per-CU evidence."
+        )
     return lines
 
 

@@ -1,8 +1,11 @@
 """Shared helpers for parsing rocprofv3 / rocprof-compute outputs.
 
 Designed to work with both:
-  - ROCm 6.x: rocprofv3 + rocprof-compute write per-tool CSV trees
-    (pmc_perf.csv, timestamps.csv, SoC/{SQ,TCP,TCC_EA0,...}.csv, etc.)
+  - rocprof-compute (ROCm 6.3+): writes a flat directory under the `-p` path
+    containing `pmc_perf.csv`, `timestamps.csv`, `sysinfo.csv`,
+    `roofline.csv` (when `--roofline` is set), plus a `perfmon/` subdir with
+    one `.txt`/`.yaml` per PMC group. There is no `SoC/` subdir in current
+    releases — all counters live in `pmc_perf.csv`.
   - ROCm 7.x: rocprofv3 defaults to a single `.db` per run using the
     rocpd schema (the optional `rocpd` Python helper, or plain sqlite3)
 
@@ -37,16 +40,15 @@ def load_rpc_dir(rpc_dir, kernel_regex=None):
 
     Args:
         rpc_dir: path to a rocprof-compute profile directory (the `-p` arg).
-        kernel_regex: if given, filter pmc + SoC CSVs to dispatches whose
+        kernel_regex: if given, filter pmc CSVs to dispatches whose
             Kernel_Name matches this regex. Selects via timestamps.csv.
 
     Returns:
         dict with keys:
-            'pmc'        — DataFrame from pmc_perf.csv
+            'pmc'        — DataFrame from pmc_perf.csv (all counters land here)
             'timestamps' — DataFrame from timestamps.csv (filtered if regex)
             'sysinfo'    — DataFrame from sysinfo.csv (if present)
             'roofline'   — DataFrame from roofline.csv (if present)
-            'soc'        — dict[str, DataFrame] of SoC/*.csv (filtered if regex)
             'rpc_dir'    — original path
     """
     rpc = Path(rpc_dir)
@@ -79,13 +81,6 @@ def load_rpc_dir(rpc_dir, kernel_regex=None):
         p = rpc / opt
         out[opt.replace(".csv", "")] = pd.read_csv(p) if p.exists() else pd.DataFrame()
 
-    soc = {}
-    for p in sorted((rpc / "SoC").glob("*.csv")) if (rpc / "SoC").is_dir() else []:
-        df = pd.read_csv(p)
-        if sel_ids is not None and "Dispatch_ID" in df.columns:
-            df = df[df["Dispatch_ID"].isin(sel_ids)].copy()
-        soc[p.stem] = df
-    out["soc"] = soc
     return out
 
 
@@ -121,19 +116,15 @@ def first_present(df, *names, default=None):
 
 
 def enumerate_counters(rpc_dir):
-    """Return the set of all column names across pmc_perf.csv + every SoC/*.csv."""
+    """Return the set of all column names in pmc_perf.csv."""
     rpc = Path(rpc_dir)
     seen = set()
-    paths = []
-    if (rpc / "pmc_perf.csv").exists():
-        paths.append(rpc / "pmc_perf.csv")
-    if (rpc / "SoC").is_dir():
-        paths.extend(sorted((rpc / "SoC").glob("*.csv")))
-    for p in paths:
+    pmc = rpc / "pmc_perf.csv"
+    if pmc.exists():
         try:
-            seen.update(pd.read_csv(p, nrows=1).columns)
+            seen.update(pd.read_csv(pmc, nrows=1).columns)
         except Exception:
-            continue
+            pass
     return seen
 
 
@@ -293,7 +284,7 @@ def detect_arch(rpc):
 # --- Aggregate counter dumps ------------------------------------------------
 
 def dump_all_counters(rpc, outpath):
-    """Dump every counter sum across pmc + SoC/* to a JSON file.
+    """Dump every counter sum from pmc_perf.csv to a JSON file.
 
     Returns the number of entries written.
     """
@@ -310,17 +301,6 @@ def dump_all_counters(rpc, outpath):
                     rows[f"pmc_perf::{col}"] = str(pmc[col].iloc[0])
             except Exception as e:
                 rows[f"pmc_perf::{col}"] = f"<error: {e}>"
-    for name, df in (rpc.get("soc") or {}).items():
-        for col in df.columns:
-            if col in ("Dispatch_ID", "Kernel_Name"):
-                continue
-            try:
-                if pd.api.types.is_numeric_dtype(df[col]):
-                    rows[f"{name}::{col}"] = float(df[col].sum())
-                else:
-                    rows[f"{name}::{col}"] = str(df[col].iloc[0])
-            except Exception as e:
-                rows[f"{name}::{col}"] = f"<error: {e}>"
     Path(outpath).write_text(json.dumps(rows, indent=1, default=str))
     return len(rows)
 
@@ -330,7 +310,6 @@ def dump_key_counters(rpc, arch, outpath_json, outpath_txt=None):
     keys = key_counters_for_arch(arch or detect_arch(rpc) or "gfx942")
     out = {}
     pmc = rpc.get("pmc")
-    soc = rpc.get("soc") or {}
     for k in keys:
         v = None
         if pmc is not None and not pmc.empty and k in pmc.columns:
@@ -338,14 +317,6 @@ def dump_key_counters(rpc, arch, outpath_json, outpath_txt=None):
                 v = float(pmc[k].sum()) if pd.api.types.is_numeric_dtype(pmc[k]) else str(pmc[k].iloc[0])
             except Exception as e:
                 v = f"<error: {e}>"
-        else:
-            for sn, df in soc.items():
-                if k in df.columns:
-                    try:
-                        v = float(df[k].sum()) if pd.api.types.is_numeric_dtype(df[k]) else str(df[k].iloc[0])
-                    except Exception as e:
-                        v = f"<error: {e}>"
-                    break
         out[k] = v
     out["__duration_ns__"] = kernel_duration_ns(rpc)
     out["__arch__"] = arch or detect_arch(rpc)

@@ -44,8 +44,9 @@ Minimal runnable command listing:
         -- ./harness [args]
 
     # 2. Section-based perf metrics (analog of `ncu --set full`)
+    # rocprof-compute's kernel filter is `-k` / `--kernel` (substring, not regex).
     rocprof-compute profile -n <run_name>_<tag> --roofline \
-        --kernel-name "<kernel_regex>" \
+        -k "<kernel_substring>" \
         -p profile/<run_name>/reports/rpc_<tag> \
         -- ./harness [args]
     rocprof-compute analyze -p profile/<run_name>/reports/rpc_<tag> \
@@ -53,9 +54,11 @@ Minimal runnable command listing:
 
     # 3. Per-line stall sampling (analog of `ncu --set source`)
     # Note the underscore in `host_trap` (not `host-trap`).
+    # `host_trap` only supports `--pc-sampling-unit time` (`cycles`/`instructions`
+    # are stochastic-only and the runtime rejects the wrong combo).
     rocprofv3 --pc-sampling-beta-enabled \
         --pc-sampling-method host_trap \
-        --pc-sampling-interval 1000 --pc-sampling-unit cycles \
+        --pc-sampling-interval 1000000 --pc-sampling-unit time \
         --kernel-include-regex "<kernel_regex>" \
         -d profile/<run_name>/reports/pcsamp_<tag> \
         -- ./harness [args]
@@ -67,12 +70,13 @@ Minimal runnable command listing:
     ├── harness/...                         ← standalone harness
     ├── reports/
     │   ├── trace_<tag>/                    ← rocprofv3 kernel-trace (+ .db on ROCm 7+)
-    │   ├── rpc_<tag>/                      ← rocprof-compute profile dir
-    │   │   ├── pmc_perf.csv
+    │   ├── rpc_<tag>/                      ← rocprof-compute profile dir (flat)
+    │   │   ├── pmc_perf.csv                ← all PMCs land here, one row per dispatch
     │   │   ├── timestamps.csv
     │   │   ├── sysinfo.csv
-    │   │   ├── SoC/{SQ,TCP,TCC_EA0,TCC_EA1,...}.csv
-    │   │   └── roofline.csv
+    │   │   ├── roofline.csv                ← when --roofline was passed
+    │   │   ├── profiling_config.yaml
+    │   │   └── perfmon/                    ← per-PMC-group .txt/.yaml inputs
     │   ├── pcsamp_<tag>/                   ← PC sampling CSV
     │   └── att_<tag>/                      ← optional ATT (one JSON per SE/CU)
     └── analysis/                           ← scripts + extracted metrics
@@ -113,7 +117,7 @@ Minimal runnable command listing:
 > Walk through the six analysis dimensions (see [`05-analysis-dimensions.md`](05-analysis-dimensions.md)), cite counters, state findings.
 
 ### 2.1 CU occupancy & launch geometry
-<grid size, workgroup size, waves/CU, theoretical vs achieved occupancy, VGPR/AGPR/LDS limits, wave64 math; XCD layout (8 XCDs on MI300X, 2 IODs on MI355X) and whether grid fills them>
+<grid size, workgroup size, waves/CU, theoretical vs achieved occupancy, VGPR/AGPR/LDS limits, wave64 math; XCD layout (MI300X: 8 XCDs × 38 CUs over 4 IODs; MI355X: 8 XCDs × 32 CUs over 2 IODs) and whether grid fills them>
 
 ### 2.2 Workgroup balance (tail effect)
 <per-XCD active cycles, rocprof-compute §2.1.23 imbalance, timeseries shape, input distribution imbalance ratios>

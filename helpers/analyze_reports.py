@@ -2,7 +2,7 @@
 """Extract and compare key counters from rocprof-compute output directories.
 
 Produces in `<run_dir>/analysis/`:
-    metrics_all_<tag>.json        — every counter sum across pmc + SoC/*
+    metrics_all_<tag>.json        — every counter sum from pmc_perf.csv
     metrics_key_<tag>.txt/json    — curated MI300X/MI355X key counters
     compare_<tag1>_vs_<tag2>.txt  — side-by-side (when >= 2 reports given)
 
@@ -68,7 +68,12 @@ def compare(collected: dict, analysis_dir: Path, arch):
         return
     keys = key_counters_for_arch(arch or "gfx942")
     safe_tags = [_safe_tag(t) for t in tags]
-    out_path = analysis_dir / f"compare_{'_vs_'.join(safe_tags)}.txt"
+    if len(safe_tags) <= 2:
+        out_name = f"compare_{'_vs_'.join(safe_tags)}.txt"
+    else:
+        # Avoid unbounded filename growth; the file header already lists all tags.
+        out_name = f"compare_{safe_tags[0]}_vs_{safe_tags[-1]}_and_{len(safe_tags) - 2}_more.txt"
+    out_path = analysis_dir / out_name
     with open(out_path, "w") as f:
         col_w = max(20, max(len(t) for t in tags) + 2)
         f.write(f"{'Counter':<60}")

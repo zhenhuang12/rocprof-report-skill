@@ -29,7 +29,7 @@ Workgroups_Launched
 Achieved_Occupancy_pct                          # rocprof-compute derives this
 Theoretical_Occupancy_pct                       # from VGPR/LDS/wkg limits
 Compute_Unit_Count                              # 304 on MI300X, 256 on MI355X
-XCD_Count                                       # 8 on MI300X SPX; 1-8 depending on partition mode (MI300X) or 2 IODs (MI355X)
+XCD_Count                                       # MI300X: 8 XCDs over 4 IODs (1-8 visible depending on CPX/SPX partition mode). MI355X: 8 XCDs over 2 IODs.
 ```
 
 > **CDNA3 register model:** each SIMD has 256 VGPRs **plus** 256 AGPRs (Accumulator GPRs). MFMA reads source operands from VGPR/AGPR and writes accumulator results to AGPR. CDNA3 introduced free movement between VGPR and AGPR, but the budget is *two separate pools* — a register-pressure report listing 256 "VGPRs" is hiding the AGPR half. rocprof-compute reports both.

@@ -73,11 +73,13 @@ profile/<run_name>/
 ├── reports/
 │   ├── trace_<tag1>/               ← rocprofv3 kernel-trace output dir (.csv / .json / .pftrace / .db)
 │   ├── trace_<tag2>/
-│   ├── rpc_<tag1>/                 ← rocprof-compute "profile" output dir
-│   │   ├── SoC/                    ← per-IP CSVs (SQ, TCP, TCC_EA0, ...)
-│   │   ├── pmc_perf.csv
+│   ├── rpc_<tag1>/                 ← rocprof-compute "profile" output dir (flat layout)
+│   │   ├── pmc_perf.csv            ← all collected PMCs, one row per dispatch
 │   │   ├── timestamps.csv
-│   │   └── ...
+│   │   ├── sysinfo.csv
+│   │   ├── roofline.csv            ← only when --roofline was passed
+│   │   ├── profiling_config.yaml
+│   │   └── perfmon/                ← per-PMC-group .txt/.yaml inputs (not analysis data)
 │   ├── rpc_<tag2>/
 │   ├── att_<tag1>/                 ← rocprofv3 --att output dir (JSON traces per CU)
 │   ├── att_<tag2>/
@@ -101,7 +103,7 @@ Notes:
 - `<tag>` is the per-workload / per-dispatch-path label, e.g. `path_a_shapeA`, `path_b_shapeB`. Pick tags that are short and name the representative workload, not the file UUID.
 - If you profile only one tag, you can omit the tag suffix from filenames. But as soon as you profile a second, backfill the tag to avoid ambiguity.
 - Keep `analysis/analyze_reports.py` as a per-run copy (pointing at the run-local `reports/`), not a symlink into the repo. This way the run is self-contained and archivable.
-- **rocprof-compute writes a directory tree, not a single file.** Don't try to flatten it — the helpers and the GUI both walk the SoC subdir, pmc_perf.csv, timestamps.csv, etc.
+- **rocprof-compute writes a flat directory.** All PMCs land in `pmc_perf.csv`; there is no `SoC/` subdir in current releases. When `-p <path>` is passed, files land directly under `<path>/`; when omitted, output defaults to `./workloads/<name>/<gpu_model>/`. Keep the whole dir — the helpers and the GUI walk the flat layout.
 - **rocprofv3** in ROCm 7+ defaults to a SQLite `.db` (the `rocpd` schema) plus CSVs. In ROCm 6.x it defaulted to CSVs only. Keep whatever rocprofv3 produced — pandas + sqlite3 handle both.
 
 ---
@@ -175,9 +177,10 @@ rocprofv3 --kernel-trace --hip-trace --hsa-trace \
     -- "$PROFILE_RUN_DIR/harness/kernel_harness" [args]
 
 # rocprof-compute section perf (analog of ncu --set full)
+# Flag is -k / --kernel (substring match), not --kernel-name.
 rocprof-compute profile -n <run_name>_<tag> \
     --roofline \
-    --kernel-name "my_kernel" \
+    -k "my_kernel" \
     -p "$PROFILE_RUN_DIR/reports/rpc_<tag>" \
     -- "$PROFILE_RUN_DIR/harness/kernel_harness" [args]
 

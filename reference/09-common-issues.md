@@ -41,11 +41,11 @@ export PATH=$ROCM_PATH/bin:$PATH
 
 ### `rocprofv3: command not found` but `rocprof` works
 
-You're on ROCm 6.0/6.1 which only ships `rocprof` (the legacy tool). Upgrade to ROCm 6.2+ for `rocprofv3` and ROCm 6.3+ for `rocprof-compute` (formerly Omniperf, formerly Omnitrace). MI355X (gfx950) **requires ROCm 7+**.
+You're on ROCm 6.0/6.1 which only ships `rocprof` (the legacy tool). Upgrade to ROCm 6.2+ for `rocprofv3` and ROCm 6.3+ for `rocprof-compute` (formerly Omniperf). MI355X (gfx950) **requires ROCm 7+**.
 
 ---
 
-## `--kernel-include-regex` / `--kernel-name` matches nothing
+## `--kernel-include-regex` (rocprofv3) / `-k`/`--kernel` (rocprof-compute) matches nothing
 
 1. **Use the demangled name.** Templates produce something like `my_kernel<8, 256>(...)`. Check:
    ```bash
@@ -87,7 +87,7 @@ For JIT / framework-integrated builds:
 
 1. **Beta flag missing.** PC sampling is gated behind a beta flag in ROCm 6.4+. The CLI needs `--pc-sampling-beta-enabled` (or set `ROCPROFILER_PC_SAMPLING_BETA_ENABLED=1` in the environment).
 2. **Method not supported on your hardware.** Try `--pc-sampling-method host_trap` first (note the underscore, not `host-trap`) — it works on MI200+ and is the most portable. `stochastic` is lower-overhead but requires MI300+ and a recent ROCm build with the kernel-mode feature compiled in.
-3. **Sampling interval too coarse.** `--pc-sampling-interval 1000000 --pc-sampling-unit cycles` may produce no samples for a 100 µs kernel. Drop to `1000` or `100`.
+3. **Sampling interval too coarse / wrong unit.** With `host_trap` you MUST use `--pc-sampling-unit time` (interval is nanoseconds; 10⁶ ns = 1 ms is a sensible default — drop to 10⁵ for sub-ms kernels). Passing `cycles` or `instructions` with `host_trap` is rejected at runtime as "PC sampling configuration is not supported"; those units are stochastic-only.
 4. **Kernel too short.** Kernels under ~50 µs may not produce useful sample counts. Increase work in the harness (run the kernel in a small loop — but be aware rocprofv3 replays each PMC group, so this can blow up wall time).
 5. **Permission issue.** Some ROCm builds require `CAP_PERFMON` for PC sampling. Try `sudo` to confirm it's a perms issue.
 
@@ -131,7 +131,7 @@ Try `rocprof-compute analyze -p rpc_<tag> -b <ID>` to render a single section an
 
 ---
 
-## CSV column missing from `pmc_perf.csv` / `SoC/*.csv`
+## CSV column missing from `pmc_perf.csv`
 
 1. **Wrong counter name for this gfx.** See [`08-mi300x-mi355x-counter-names.md`](08-mi300x-mi355x-counter-names.md). gfx906/908/90a name differently than gfx942/950.
 2. **Counter not in this PMC group.** rocprofv3 logs the group assignment — search the log for the counter name. If you need a specific counter, list it explicitly via `--pmc` or a YAML job file.
@@ -253,7 +253,7 @@ Either:
 | Feature | Min ROCm | Notes |
 |---|---|---|
 | `rocprofv3` | 6.2 | Default profiling tool from 6.2 forward |
-| `rocprof-compute` | 6.3 | Formerly Omniperf, formerly Omnitrace |
+| `rocprof-compute` | 6.3 | Formerly Omniperf (Omnitrace is a separate, system-wide tracer — different tool) |
 | ATT / SQTT | 6.0 (rocprof) / 6.2 (rocprofv3) | Capture per SE/CU |
 | PC sampling (`host_trap`) | 6.2 | MI200+; ROCm 6.4+ also requires `--pc-sampling-beta-enabled` |
 | PC sampling (`stochastic`) | 6.3 | MI300+; same beta-flag requirement as above |

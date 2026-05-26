@@ -25,17 +25,16 @@ The helpers degrade gracefully if `rocpd` isn't importable — they fall back to
 `rocprof-compute profile -p <dir>` writes a directory; key files:
 
 ```
-rpc_<tag>/
-├── pmc_perf.csv          ← one row per (PMC group × kernel dispatch), columns = counter names
+rpc_<tag>/                ← when you pass `-p <dir>`, files land flat under it
+├── pmc_perf.csv          ← all collected PMCs land here, one row per dispatch
 ├── timestamps.csv        ← per-dispatch start/end ns + kernel name + grid/block
 ├── sysinfo.csv           ← gfx arch, ROCm version, CU count, etc.
-├── SoC/                  ← per-IP CSVs (one per IP block: SQ, TCP, TCC_EA0, TCC_EA1, ...)
-│   ├── SQ.csv
-│   ├── TCP.csv
-│   ├── TCC_EA0.csv
-│   └── ...
-└── roofline.csv          ← present if --roofline was used
+├── roofline.csv          ← present if --roofline was used
+├── profiling_config.yaml ← captured invocation config
+└── perfmon/              ← per-PMC-group .txt/.yaml input files (not analysis data)
 ```
+
+Note: current rocprof-compute releases do **not** create a `SoC/` subdir under the profile dir — every counter lives in `pmc_perf.csv`. When `-p` is omitted, output defaults to `./workloads/<name>/<gpu_model>/` instead of being flat under the cwd.
 
 ```python
 import pandas as pd
@@ -82,12 +81,8 @@ if mfma is not None and valu is not None:
 ## Enumerating available counters
 
 ```python
-# Across pmc_perf.csv + every SoC/*.csv
-import glob
-seen = set()
-for path in [RPC_DIR / "pmc_perf.csv"] + list((RPC_DIR / "SoC").glob("*.csv")):
-    df = pd.read_csv(path, nrows=1)     # only need the header
-    seen.update(df.columns)
+# pmc_perf.csv holds every collected PMC; no SoC/ subdir to walk.
+seen = set(pd.read_csv(RPC_DIR / "pmc_perf.csv", nrows=1).columns)
 
 for name in sorted(seen):
     if "SQ_WAIT" in name or "WAIT_INST" in name:
@@ -189,15 +184,9 @@ with rocpd.open("path/to/file.db") as db:
 
 ## Discovering counter / column kinds
 
-Most rocprof outputs are plain numeric CSV. Two edge cases:
+Most rocprof outputs are plain numeric CSV. One edge case:
 
-1. Some counter columns are **already aggregated** (e.g., `..._sum` is sum across all CUs / channels; `..._avg` is average). Don't sum again. Convention is in the suffix.
-2. Some columns are **derived per-IP** (e.g., per-TCC channel under `SoC/TCC_EA0.csv`) and have one row per channel × dispatch. Reduce them yourself:
-
-```python
-tcc = pd.read_csv(RPC_DIR / "SoC" / "TCC_EA0.csv")
-hbm_read = tcc.groupby("Dispatch_ID")["TCC_EA0_RDREQ"].sum()
-```
+1. Some counter columns are **already aggregated** (e.g., `..._sum` is sum across all CUs / channels; `..._avg` is average). Don't sum again. Convention is in the suffix. Use the unsuffixed name only when summing yourself across channels (e.g., grouping `TCC_EA0_RDREQ` by `Dispatch_ID` if rocprof-compute exposed it that way on your build).
 
 ---
 
@@ -207,11 +196,10 @@ hbm_read = tcc.groupby("Dispatch_ID")["TCC_EA0_RDREQ"].sum()
 import re
 
 pat = re.compile(r"^(SQ_WAIT|TCC_EA0_).*", re.I)
-for path in glob.glob(str(RPC_DIR / "SoC" / "*.csv")) + [str(RPC_DIR / "pmc_perf.csv")]:
-    df = pd.read_csv(path, nrows=1)
-    for col in df.columns:
-        if pat.search(col):
-            print(f"{Path(path).name:30s}  {col}")
+df = pd.read_csv(RPC_DIR / "pmc_perf.csv", nrows=1)
+for col in df.columns:
+    if pat.search(col):
+        print(col)
 ```
 
 This is how I built [`08-mi300x-mi355x-counter-names.md`](08-mi300x-mi355x-counter-names.md) — by enumerating everything available on gfx942 / gfx950.
@@ -288,13 +276,14 @@ def dump_all(rpc_dir, kernel_regex, outpath):
     ts  = pd.read_csv(rpc / "timestamps.csv")
     sel = ts[ts["Kernel_Name"].str.contains(kernel_regex, regex=True)]
     rows = {}
-    for path in [rpc / "pmc_perf.csv"] + list((rpc / "SoC").glob("*.csv")):
-        df = pd.read_csv(path)
+    pmc = rpc / "pmc_perf.csv"
+    if pmc.exists():
+        df = pd.read_csv(pmc)
         if "Dispatch_ID" in df.columns:
             df = df[df["Dispatch_ID"].isin(sel["Dispatch_ID"])]
         for col in df.columns:
             if col in ("Dispatch_ID", "Kernel_Name"): continue
-            rows[f"{path.stem}::{col}"] = df[col].sum() if pd.api.types.is_numeric_dtype(df[col]) else df[col].iloc[0]
+            rows[f"pmc_perf::{col}"] = df[col].sum() if pd.api.types.is_numeric_dtype(df[col]) else df[col].iloc[0]
     Path(outpath).write_text(json.dumps(rows, indent=1, default=str))
 
 dump_all(RPC_DIR, "my_kernel", "analysis/metrics_all_<tag>.json")

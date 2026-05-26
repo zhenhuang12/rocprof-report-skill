@@ -3,9 +3,11 @@
 
 Reads PC-sampling CSV produced by:
     # Note the underscore in `host_trap` (not `host-trap`).
+    # `host_trap` only supports `--pc-sampling-unit time`; the `cycles` and
+    # `instructions` units are stochastic-only.
     rocprofv3 --pc-sampling-beta-enabled \\
         --pc-sampling-method host_trap \\
-        --pc-sampling-interval 1000 --pc-sampling-unit cycles \\
+        --pc-sampling-interval 1000000 --pc-sampling-unit time \\
         --kernel-include-regex "<regex>" \\
         -d <pcsamp_dir> -- ./harness [args]
 

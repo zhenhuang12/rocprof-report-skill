@@ -11,11 +11,8 @@ rocprofv3 --list-avail > /tmp/all_counters.txt
 # On newer ROCm builds, the companion CLI is `rocprofv3-avail list --pmc`.
 # Or, programmatically from a collected report:
 python3 -c "
-import pandas as pd, glob
-seen = set()
-for p in glob.glob('rpc_<tag>/SoC/*.csv') + ['rpc_<tag>/pmc_perf.csv']:
-    seen.update(pd.read_csv(p, nrows=1).columns)
-print('\n'.join(sorted(seen)))
+import pandas as pd
+print('\n'.join(sorted(pd.read_csv('rpc_<tag>/pmc_perf.csv', nrows=1).columns)))
 "
 ```
 
@@ -159,7 +156,7 @@ TCC_RW_REQ_sum                        # read/write mix
 
 L2 hit rate: `TCC_HIT_sum / (TCC_HIT_sum + TCC_MISS_sum)`
 
-### HBM / memory channel (TCC_EA — per channel, MI300X has 2: EA0, EA1; MI355X has more channels per IOD)
+### HBM / memory channel (TCC_EA — `EA0` / `EA1` per XCD on MI300X; enumerate with `rocprofv3 -L | grep TCC_EA` on your install — channel count and naming may differ on gfx950)
 ```
 TCC_EA0_RDREQ_sum                     # read requests issued to HBM channel 0
 TCC_EA0_RDREQ_32B_sum                 # 32B-granular read requests
@@ -318,11 +315,9 @@ rocprofv3 -L | grep -i WAIT
 
 From Python (after running a profile pass):
 ```python
-import pandas as pd, glob
-seen = set()
-for p in glob.glob('rpc_<tag>/SoC/*.csv') + ['rpc_<tag>/pmc_perf.csv']:
-    seen.update(pd.read_csv(p, nrows=1).columns)
-print('\n'.join(sorted(c for c in seen if c.startswith('SQ_'))))
+import pandas as pd
+cols = pd.read_csv('rpc_<tag>/pmc_perf.csv', nrows=1).columns
+print('\n'.join(sorted(c for c in cols if c.startswith('SQ_'))))
 ```
 
 ---

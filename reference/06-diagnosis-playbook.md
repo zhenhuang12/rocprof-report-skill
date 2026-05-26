@@ -18,7 +18,7 @@ For each *observation* below, read:
 
 Most kernels will match 2-4 patterns simultaneously. **Rank them by magnitude** using rocprof-compute's Speed-of-Light gap-to-peak (from section 2.1.1) and the wait-cycle-percentage breakdown. Fix the biggest one first.
 
-> **CU vs SM:** mental model — one CU is the CDNA equivalent of an SM. MI300X has 304 CUs (8 XCDs × 38 CU). MI355X has 256 CUs (2 IODs). The patterns below are described in those units.
+> **CU vs SM:** mental model — one CU is the CDNA equivalent of an SM. MI300X has 304 CUs (8 XCDs × 38 CUs, organized over 4 IODs). MI355X has 256 CUs (8 XCDs × 32 CUs, organized over 2 IODs). The patterns below are described in those units.
 
 ---
 

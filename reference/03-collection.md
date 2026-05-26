@@ -58,17 +58,17 @@ This is the bread-and-butter run. `rocprof-compute profile` collects the PMC gro
 rocprof-compute profile \
     -n <run_name>_<tag> \
     --roofline \
-    --kernel-name "KERNEL_REGEX" \
+    -k "KERNEL_SUBSTRING" \
     -p $PROFILE_RUN_DIR/reports/rpc_<tag> \
     -- ./harness [args]
 ```
 
 | Flag | Meaning |
 |---|---|
-| `-n` / `--name` | Workload name used in the output directory + report titles. |
+| `-n` / `--name` | Workload name used in report titles (and, only when `-p` is **omitted**, in the default output path). |
 | `--roofline` | Also run the empirical roofline benchmarks (peak HBM BW, peak FLOPS, …) so the section reports can place this kernel on the roofline plot. Skips if you already have a cached roofline for this GPU. |
-| `--kernel-name` | Filter (substring / regex depending on rocprof-compute version) on demangled kernel names. Limits the kernels measured per PMC group. |
-| `-p` / `--path` | Output directory; rocprof-compute creates a `SoC/` subdir, `pmc_perf.csv`, `timestamps.csv`, `sysinfo.csv`, etc. |
+| `-k` / `--kernel` | Filter on demangled kernel names (substring, accepts multiple values). Limits the kernels measured per PMC group. (Note: the flag is `--kernel`, not `--kernel-name`.) |
+| `-p` / `--path` | Output directory. When you pass `-p`, rocprof-compute writes flat under that directory: `pmc_perf.csv`, `timestamps.csv`, `sysinfo.csv`, `roofline.csv`, plus a `perfmon/` subdir with one `.txt`/`.yaml` per PMC group. When `-p` is omitted, output defaults to `./workloads/<name>/<gpu_model>/`. |
 
 Replay count: ~15-30 passes (one per PMC group; rocprofv3 replays the whole binary, not just the kernel). Wall time: kernel time × number of groups + init.
 
@@ -101,8 +101,8 @@ Two options. Prefer PC sampling (lower overhead) when available; fall back to AT
 ```bash
 rocprofv3 --pc-sampling-beta-enabled \
     --pc-sampling-method host_trap \
-    --pc-sampling-interval 1000 \
-    --pc-sampling-unit cycles \
+    --pc-sampling-interval 1000000 \
+    --pc-sampling-unit time \
     --kernel-include-regex "KERNEL_REGEX" \
     -d $PROFILE_RUN_DIR/reports/pcsamp_<tag> \
     -- ./harness [args]
@@ -112,8 +112,8 @@ rocprofv3 --pc-sampling-beta-enabled \
 |---|---|
 | `--pc-sampling-beta-enabled` | **Required in ROCm 6.4+** — PC sampling is still a beta feature; sets `ROCPROFILER_PC_SAMPLING_BETA_ENABLED=1` internally. |
 | `--pc-sampling-method` | `host_trap` (works on MI200+) is the most portable; `stochastic` is lower-overhead on MI300+ if your ROCm build enables it. **Note the underscore — not `host-trap`.** |
-| `--pc-sampling-interval` | Sample every N units (cycles / instructions / time, per `--pc-sampling-unit`). |
-| `--pc-sampling-unit` | `time` (default for host_trap), `cycles` or `instructions` (stochastic). |
+| `--pc-sampling-interval` | Sample every N units (per `--pc-sampling-unit`). For `host_trap` + `time`, units are nanoseconds; 10⁶ ns = 1 ms is a sensible starting point. |
+| `--pc-sampling-unit` | **`host_trap` only accepts `time`** — passing `cycles` or `instructions` with `host_trap` is rejected at runtime as "PC sampling configuration is not supported". `cycles` and `instructions` are for `stochastic`. |
 | `--kernel-include-regex` | Limits sampling to matching kernels. |
 
 Output: per-kernel CSV with `Instruction_Address`, `Source` (file:line, populated only when compiled with `-gline-tables-only`/`-g`), `Instruction_Comment` (the SASS-equivalent text on AMD: the ISA mnemonic), `Wait_Reason`, `Sample_Count`.
@@ -186,11 +186,11 @@ The full list of available counters: `rocprofv3 -L` (long form `--list-avail`). 
 
 ```bash
 # Before
-rocprof-compute profile -n v1 --kernel-name "my_kernel" \
+rocprof-compute profile -n v1 -k my_kernel \
     -p $PROFILE_RUN_DIR/reports/rpc_v1 -- ./harness_v1 [args]
 
 # After
-rocprof-compute profile -n v2 --kernel-name "my_kernel" \
+rocprof-compute profile -n v2 -k my_kernel \
     -p $PROFILE_RUN_DIR/reports/rpc_v2 -- ./harness_v2 [args]
 
 # Side-by-side from the CLI

@@ -107,7 +107,7 @@ rocprofv3 --kernel-trace --hip-trace --hsa-trace \
 # (2) Section-based perf metrics (analog of ncu --set full)
 rocprof-compute profile -n <run_name>_<tag> \
     --roofline \
-    --kernel-name "YOUR_KERNEL_NAME" \
+    -k "YOUR_KERNEL_NAME" \
     -p "$PROFILE_RUN_DIR/reports/rpc_<tag>" \
     -- "$PROFILE_RUN_DIR/harness/your_harness" [args]
 
@@ -115,9 +115,11 @@ rocprof-compute profile -n <run_name>_<tag> \
 # Prefer PC sampling on MI300X+ when supported (lower overhead than ATT).
 # `--pc-sampling-beta-enabled` is REQUIRED in ROCm 6.4+ — the feature is still beta.
 # Note the underscore in `host_trap` (not `host-trap`).
+# `host_trap` only supports `--pc-sampling-unit time` (`cycles`/`instructions`
+# are stochastic-only; the runtime rejects the wrong combo).
 rocprofv3 --pc-sampling-beta-enabled \
     --pc-sampling-method host_trap \
-    --pc-sampling-interval 1000 --pc-sampling-unit cycles \
+    --pc-sampling-interval 1000000 --pc-sampling-unit time \
     --kernel-include-regex "YOUR_KERNEL_NAME" \
     -d "$PROFILE_RUN_DIR/reports/pcsamp_<tag>" \
     -- "$PROFILE_RUN_DIR/harness/your_harness" [args]
@@ -161,7 +163,7 @@ Save everything under `$PROFILE_RUN_DIR/analysis/`. The user will want to re-ins
 
 Work through the six analysis dimensions — see [`05-analysis-dimensions.md`](05-analysis-dimensions.md):
 
-1. **CU occupancy & wave structure** — are enough workgroups launched to fill the chip (304 CUs across 8 XCDs on MI300X; 256 CUs across 2 IODs on MI355X)? Is occupancy register- / LDS- / workgroup-limited?
+1. **CU occupancy & wave structure** — are enough workgroups launched to fill the chip (304 CUs = 8 XCDs × 38 CUs over 4 IODs on MI300X; 256 CUs = 8 XCDs × 32 CUs over 2 IODs on MI355X)? Is occupancy register- / LDS- / workgroup-limited?
 2. **Workgroup balance (tail effect)** — do per-CU / per-XCD active cycles match? Does the PMC timeline show a clean drop or a gradual tail?
 3. **Instruction-level stall analysis** — what wait reason dominates (`SQ_WAIT_INST_VMEM`, `SQ_WAIT_INST_LDS`, `SQ_WAIT_BARRIER`, plus the PC-sampling `Wait_Reason` enums)? Which source line generates it?
 4. **Matrix-Core utilization** — if this is a GEMM-ish kernel, are MFMA instructions actually being issued (`SQ_INSTS_VALU_MFMA_MOPS_<dtype>` / `SQ_VALU_MFMA_BUSY_CYCLES`)?
