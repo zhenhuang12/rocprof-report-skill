@@ -73,7 +73,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
-from rocprof_utils import load_pcsamp_csv  # noqa: E402
+from rocprof_utils import load_pcsamp_csv, safe_tag  # noqa: E402
 
 
 def write_report(per_line, totals_by_stall, out_path, tag, top_n=30):
@@ -348,7 +348,7 @@ def main():
         except Exception as e:
             print(f"[error] {tag}: {e}", file=sys.stderr)
             continue
-        out = analysis_dir / f"stall_hotspots_{tag}.txt"
+        out = analysis_dir / f"stall_hotspots_{safe_tag(tag)}.txt"
         write_report(per_line, totals, out, tag, top_n=args.top)
         print(f"[{tag}] -> {out} ({len(per_line)} distinct lines, "
               f"{sum(totals.values())} samples)")

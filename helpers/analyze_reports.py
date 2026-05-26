@@ -40,16 +40,11 @@ sys.path.insert(0, str(HERE))
 
 from rocprof_utils import (  # noqa: E402
     detect_arch, dump_all_counters, dump_key_counters,
-    kernel_duration_ns, key_counters_for_arch, load_rpc_dir,
+    kernel_duration_ns, key_counters_for_arch, load_rpc_dir, safe_tag,
 )
 
-
-_TAG_SAFE = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-")
-
-
-def _safe_tag(tag: str) -> str:
-    """Make a tag safe to embed in a filename: keep [A-Za-z0-9._-], else '_'."""
-    return "".join(ch if ch in _TAG_SAFE else "_" for ch in tag) or "untagged"
+# Local alias kept for back-compat with prior callers in this file.
+_safe_tag = safe_tag
 
 
 def _resolve_kernel_trace(rpc_dir: Path, tag: str, explicit: Path | None) -> Path | None:
@@ -60,19 +55,33 @@ def _resolve_kernel_trace(rpc_dir: Path, tag: str, explicit: Path | None) -> Pat
     `<out>/pmc_1/<host>/<pid>_kernel_trace.csv` path when invoked via
     rocprof-compute, and `kernel_trace.csv` at the top level when invoked as
     `rocprofv3 --kernel-trace -d <out>`. Glob both.
+
+    The caller may pass either the `-p` value (e.g. `reports/rpc_<tag>`) or an
+    opt-in nested workload dir (e.g. `reports/rpc_<tag>/MI300X`). To find the
+    sibling `reports/trace_<tag>/`, walk up parents until we find one that
+    contains a `trace_<tag>` directory.
     """
     if explicit is not None:
         return explicit if explicit.exists() else None
-    # Sibling convention: reports/rpc_<tag>/  ←→  reports/trace_<tag>/
-    parent = rpc_dir.parent
+    # Walk up at most 3 parents looking for a sibling trace_<tag>/. This covers:
+    #   - flat: reports/rpc_<tag>/        → parent reports/ has trace_<tag>/
+    #   - nested gpu_model: reports/rpc_<tag>/MI300X → parent.parent reports/
+    #   - nested gpu_model+name: workloads/<name>/MI300X → up further
+    search_root = None
+    for ancestor in [rpc_dir.parent, rpc_dir.parent.parent, rpc_dir.parent.parent.parent]:
+        if (ancestor / f"trace_{tag}").exists():
+            search_root = ancestor
+            break
+    if search_root is None:
+        return None
     candidates = []
     # rocprofv3 --kernel-trace -d <out> with no rocprof-compute wrapping
     # writes <pid>_kernel_trace.csv flat under <out>/ (no <host>/<pid>/ subdir).
-    candidates.extend(sorted(parent.glob(f"trace_{tag}/kernel_trace.csv")))
-    candidates.extend(sorted(parent.glob(f"trace_{tag}/*_kernel_trace.csv")))
+    candidates.extend(sorted(search_root.glob(f"trace_{tag}/kernel_trace.csv")))
+    candidates.extend(sorted(search_root.glob(f"trace_{tag}/*_kernel_trace.csv")))
     # Nested layout (rocprof-compute or csv-format with host/pid subdirs):
-    candidates.extend(sorted(parent.glob(f"trace_{tag}/**/kernel_trace.csv")))
-    candidates.extend(sorted(parent.glob(f"trace_{tag}/**/*_kernel_trace.csv")))
+    candidates.extend(sorted(search_root.glob(f"trace_{tag}/**/kernel_trace.csv")))
+    candidates.extend(sorted(search_root.glob(f"trace_{tag}/**/*_kernel_trace.csv")))
     return candidates[0] if candidates else None
 
 
@@ -109,15 +118,16 @@ def collect(rpc_dir: Path, tag: str, analysis_dir: Path, kernel_regex, arch,
         print(f"[{tag}] {rpc_dir}: {n_disp} dispatch(es), duration n/a "
               f"(kernel_trace.csv at {ktrace} had no matching dispatches), arch={arch_used}")
 
-    n = dump_all_counters(rpc, analysis_dir / f"metrics_all_{tag}.json")
-    print(f"  -> metrics_all_{tag}.json ({n} counters)")
+    safe = safe_tag(tag)
+    n = dump_all_counters(rpc, analysis_dir / f"metrics_all_{safe}.json")
+    print(f"  -> metrics_all_{safe}.json ({n} counters)")
 
     key = dump_key_counters(
         rpc, arch_used,
-        analysis_dir / f"metrics_key_{tag}.json",
-        analysis_dir / f"metrics_key_{tag}.txt",
+        analysis_dir / f"metrics_key_{safe}.json",
+        analysis_dir / f"metrics_key_{safe}.txt",
     )
-    print(f"  -> metrics_key_{tag}.{{json,txt}}")
+    print(f"  -> metrics_key_{safe}.{{json,txt}}")
     # Stash the resolved arch so compare() can pick up gfx950-specific counters
     # (e.g. _F6F4) without the user having to pass --arch a second time.
     key["__arch__"] = arch_used
@@ -234,6 +244,11 @@ def main():
             continue
         collected[tag] = collect(rpc, tag, analysis_dir, args.kernel, args.arch,
                                  kernel_trace=ktrace)
+
+    if not collected:
+        print("[error] no --rpc paths existed; no analysis artifacts produced.",
+              file=sys.stderr)
+        sys.exit(2)
 
     compare(collected, analysis_dir, args.arch)
 

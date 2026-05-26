@@ -111,7 +111,7 @@ If `rocprofv3` errors with `unrecognized arguments: --list-avail` (or `--input-f
 2. **Buffer overflow / truncated trace.** Bump `--att-buffer-size 0x40000000` (1 GB) and reduce the captured kernel duration. The trace is per-SE; total memory is buffer_size × num_SEs.
 3. **`att_<tag>/*.json` empty or `Source` column blank.** Rebuild with `-gline-tables-only`. ATT also needs symbols to attribute to source — `strip` will silently break it.
 4. **One JSON per CU/SE, not one for the run.** Glob `att_<tag>/**/*.json` and merge in Python. Use `att_tool` (ships with rocprofv3) for binary-format ATT.
-5. **Captures the wrong kernel iteration.** ATT triggers on the *first* matching launch by default. To capture iteration N, combine with `--kernel-iteration-range "[N:N+1]"`.
+5. **Captures the wrong kernel iteration.** ATT triggers on the *first* matching launch by default. To capture iteration N, combine with `--kernel-iteration-range "[N-N]"` (rocprofv3 uses a hyphen, 1-indexed, inclusive on both ends; the Python-slice form `[N:N+1]` is not accepted).
 
 ---
 

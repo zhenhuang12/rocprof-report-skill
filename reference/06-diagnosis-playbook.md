@@ -95,7 +95,7 @@ Most kernels will match 2-4 patterns simultaneously. **Rank them by magnitude** 
 - Short kernels (< 20 µs) where partial-wave cost is absolute-small.
 - Workloads where you already pre-sort / pre-pack.
 
-**Cross-ref:** CDNA principle 11.
+**Cross-ref:** CDNA principle 1 ("Fill the GPU").
 
 ---
 
@@ -122,7 +122,7 @@ Most kernels will match 2-4 patterns simultaneously. **Rank them by magnitude** 
 - Gather/scatter by random index (sparse matmul, embedding lookup) — fundamentally uncoalesced. Sort the indices for locality if possible.
 - Graph / tree traversal.
 
-**Cross-ref:** CDNA principles 2, 13.
+**Cross-ref:** CDNA principles 2 ("Coalesce global loads") and 13 ("Watch per-XCD HBM balance").
 
 ---
 
@@ -172,7 +172,7 @@ If `K < 16`: consider batching multiple iterations' results into a vectorized wr
 **Exceptions:**
 - Pointer chasing / graph traversal — data dep chain is fundamental.
 
-**Cross-ref:** CDNA principles 7, 15.
+**Cross-ref:** CDNA principles 3 ("Use LDS for reuse") and 4 ("Use `global_load_lds` for prefetch").
 
 ---
 
@@ -195,7 +195,7 @@ If `K < 16`: consider batching multiple iterations' results into a vectorized wr
 - Non-matrix workloads (reduction, sort, element-wise) — Matrix Cores don't help.
 - Small matrices (M, N, K < 32) — MFMA tiles are too coarse; fall back to packed-FMA VALU.
 
-**Cross-ref:** CDNA principle 10; the CDNA companion doc's section on MFMA / Matrix Cores has examples.
+**Cross-ref:** CDNA principle 5 ("Use MFMA via CK / hipBLASLt / rocWMMA"); the CDNA companion doc's section on MFMA / Matrix Cores has examples.
 
 ---
 
@@ -221,7 +221,7 @@ If `K < 16`: consider batching multiple iterations' results into a vectorized wr
 **Exceptions:**
 - RCCL-style communication — atomics are fundamental there.
 
-**Cross-ref:** CDNA principle 12.
+**Cross-ref:** CDNA principle 10 ("Spread atomics").
 
 ---
 
@@ -245,7 +245,7 @@ If `K < 16`: consider batching multiple iterations' results into a vectorized wr
 - Broadcast reads (all lanes read same address) are conflict-free.
 - Low LDS access volume — don't bother.
 
-**Cross-ref:** CDNA principle 4.
+**Cross-ref:** CDNA principle 9 ("Pad LDS to avoid bank conflicts").
 
 ---
 
@@ -265,7 +265,7 @@ If `K < 16`: consider batching multiple iterations' results into a vectorized wr
 - Producer / consumer waves with explicit LDS-based ready flags or `s_sendmsg` (where available) instead of `s_barrier`.
 - Avoid grouping disparate workload sizes inside the same workgroup (the slowest wave dictates the rest).
 
-**Cross-ref:** CDNA principle 16.
+**Cross-ref:** CDNA principle 8 ("Avoid divergent control flow") for sync structure; principle 16 ("Use rocprof-compute SoL as the first signal") for confirming barriers really are the bottleneck.
 
 ---
 
@@ -305,7 +305,7 @@ If `K < 16`: consider batching multiple iterations' results into a vectorized wr
 **Exceptions:**
 - Large fused kernels (FlashAttention-style) accept some spill in exchange for larger savings upstream.
 
-**Cross-ref:** CDNA principle 6.
+**Cross-ref:** CDNA principle 7 ("Eliminate scratch (= register spill)"); see also principle 6 ("Budget registers with `__launch_bounds__`").
 
 ---
 
@@ -321,7 +321,7 @@ If `K < 16`: consider batching multiple iterations' results into a vectorized wr
 
 **First-line fix:** add `f` suffix to all literals: `1.0f`, `0.5f`, `3.14f`. Use `__expf` / `__logf` / `__sinf` (HIP provides the same names, mapped to AMDGPU `__ocml_*` builtins).
 
-**Cross-ref:** CDNA principle 8.
+**Cross-ref:** CDNA principle 15 ("FP64 halved on CDNA4 — pick the right GPU").
 
 ---
 
@@ -339,7 +339,7 @@ If `K < 16`: consider batching multiple iterations' results into a vectorized wr
 - Multi-stage pipeline (3-4 stages possible with CDNA3 256+256 register budget). Use `global_load_lds` plus an explicit ring buffer of LDS tiles.
 - On CDNA4, LDS grows to **160 KB/CU** (2.5× CDNA3) with 256 B/cycle read BW — you have real room for deeper ring buffers (e.g. 3–4 stages on a 128 KB tile pair leaves headroom for metadata). Combine with the wider `global_load_lds` variants and the more flexible VGPR/AGPR repartitioning.
 
-**Cross-ref:** CDNA principle 15.
+**Cross-ref:** CDNA principle 4 ("Use `global_load_lds` for prefetch").
 
 ---
 
@@ -360,7 +360,7 @@ If `K < 16`: consider batching multiple iterations' results into a vectorized wr
 - Tree reductions in waves (last few steps have half / quarter / ... active). Use `__shfl_down` / `__shfl_xor` (or the `_sync` aliases HIP keeps for CUDA source compatibility) to handle cleanly.
 - Boundary handling (a few waves at tensor edge) — not worth fighting.
 
-**Cross-ref:** CDNA principle 5.
+**Cross-ref:** CDNA principle 8 ("Avoid divergent control flow").
 
 ---
 

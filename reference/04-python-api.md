@@ -24,31 +24,34 @@ The helpers degrade gracefully if `rocpd` isn't importable — they fall back to
 
 ## Basic loading — `rocprof-compute profile` output
 
-`rocprof-compute profile -p <dir>` writes a directory; key files (the default
-`--subpath gpu` adds a `<gpu_model>/` level — `RPC_DIR` below means *the dir that
-actually holds `pmc_perf.csv`*, i.e. the `-p` value joined with the `<gpu_model>/`
-child like `MI300X/` or `MI355X/`):
+`rocprof-compute profile -p <dir>` writes a directory; with an explicit `-p` and
+the default `--subpath gpu`, key files land **flat directly under `-p`** (the
+default `"gpu"` matches neither of the two `subpath` branches in
+`rocprof_compute_base.py`). Opt-in nested layouts (`--subpath gpu_model` →
+`<gpu_model>/` child, `--subpath node_name` → `<hostname>/` child, or omitting
+`-p` entirely → auto `<name>/<gpu_model>/`) are also handled by the helpers via
+a one-level glob fallback. `RPC_DIR` below means *the dir that actually holds
+`pmc_perf.csv`*:
 
 ```
 rpc_<tag>/                       ← the `-p` value you passed
-└── <gpu_model>/                 ← e.g. `MI300X/`; default `--subpath gpu` adds this child
-    ├── pmc_perf.csv             ← all collected PMCs land here, one row per dispatch
-    ├── timestamps.csv           ← per-dispatch Start/End_Timestamp (rocprof-compute does emit this)
-    ├── sysinfo.csv              ← wide single-row: gfx arch, ROCm version, CU count, partition, etc.
-    ├── log.txt                  ← rocprof-compute invocation log
-    ├── profiling_config.yaml    ← captured invocation config
-    ├── roofline.csv             ← roofline benchmark results (when roofline ran; default-on, --no-roof to skip)
-    ├── empirRoof_gpu-0_*.pdf    ← roofline PDF plots (only with `--roof-only` / `--kernel-names`)
-    ├── perfmon/                 ← per-PMC-group .txt/.yaml input files (not analysis data)
-    └── out/pmc_<N>/<host>/<pid>_{kernel_trace,counter_collection,agent_info}.csv
+├── pmc_perf.csv                 ← all collected PMCs land here, one row per dispatch
+├── timestamps.csv               ← per-dispatch Start/End_Timestamp (rocprof-compute does emit this)
+├── sysinfo.csv                  ← wide single-row: gfx arch, ROCm version, CU count, partition, etc.
+├── log.txt                      ← rocprof-compute invocation log
+├── profiling_config.yaml        ← captured invocation config
+├── roofline.csv                 ← roofline benchmark results (when roofline ran; default-on, --no-roof to skip)
+├── empirRoof_gpu-0_*.pdf        ← roofline PDF plots (only with `--roof-only` / `--kernel-names`)
+├── perfmon/                     ← per-PMC-group .txt/.yaml input files (not analysis data)
+└── out/pmc_<N>/<host>/<pid>_{kernel_trace,counter_collection,agent_info}.csv
                                   ← raw per-pass dumps before merge
 ```
 
 Notes:
-- The artifacts live under `<-p>/<gpu_model>/`, not directly under `<-p>/`. Helpers in
-  `$SKILL/helpers/` glob-resolve the `<gpu_model>/` child for you. If you `ls` by
-  hand, descend one level. (To force a flat layout, pass `--subpath node_name` — but
-  then helper paths must be updated to match.)
+- Default `--subpath gpu` is flat: artifacts live directly under `<-p>/`. If you
+  opted into a nested layout (`--subpath gpu_model` or omitted `-p`), they sit
+  one level deeper under `<gpu_model>/`; the helpers in `$SKILL/helpers/` glob
+  for either form, so you don't have to know which one you used.
 - There is no `SoC/` subdir — every counter lives in `pmc_perf.csv`.
 
 ```python
@@ -57,9 +60,11 @@ from pathlib import Path
 
 RUN = os.environ["PROFILE_RUN_DIR"]
 RPC_TOP = Path(f"{RUN}/reports/rpc_<tag>")
-# Resolve the actual workload dir (the `<gpu_model>/` child).
-hits = list(RPC_TOP.glob("*/pmc_perf.csv"))
-RPC_DIR = hits[0].parent if hits else RPC_TOP  # fallback if a future --subpath flattens
+# Default flat layout: `pmc_perf.csv` is directly under `-p`. If you opted into
+# `--subpath gpu_model` (or omitted `-p`), fall back to the one-level glob.
+RPC_DIR = RPC_TOP if (RPC_TOP / "pmc_perf.csv").exists() else \
+          (sorted(RPC_TOP.glob("*/pmc_perf.csv"))[0].parent
+           if list(RPC_TOP.glob("*/pmc_perf.csv")) else RPC_TOP)
 
 pmc = pd.read_csv(RPC_DIR / "pmc_perf.csv")
 

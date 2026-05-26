@@ -89,15 +89,17 @@ Minimal runnable command listing:
     ├── reports/
     │   ├── trace_<tag>/                    ← rocprofv3 kernel-trace (+ .db on ROCm 7+)
     │   ├── rpc_<tag>/                      ← rocprof-compute profile output root (the `-p` value)
-    │   │   └── <gpu_model>/                ← e.g. `MI300X/`; default `--subpath gpu` adds this child
-    │   │       ├── pmc_perf.csv            ← merged PMCs, one row per (dispatch × PMC-group)
-    │   │       ├── timestamps.csv          ← per-dispatch Start/End_Timestamp
-    │   │       ├── sysinfo.csv             ← wide single-row sysinfo (NOT param/value)
-    │   │       ├── roofline.csv            ← roofline benchmark results (when collected)
-    │   │       ├── empirRoof_gpu-0_*.pdf   ← roofline PDF plots (only with --roof-only / --kernel-names)
-    │   │       ├── log.txt
-    │   │       ├── profiling_config.yaml
-    │   │       └── out/pmc_<N>/<host>/<pid>_*.csv   ← raw per-PMC-group passes
+    │   │   ├── pmc_perf.csv                ← merged PMCs, one row per (dispatch × PMC-group)
+    │   │   ├── timestamps.csv              ← per-dispatch Start/End_Timestamp
+    │   │   ├── sysinfo.csv                 ← wide single-row sysinfo (NOT param/value)
+    │   │   ├── roofline.csv                ← roofline benchmark results (when collected)
+    │   │   ├── empirRoof_gpu-0_*.pdf       ← roofline PDF plots (only with --roof-only / --kernel-names)
+    │   │   ├── log.txt
+    │   │   ├── profiling_config.yaml
+    │   │   └── out/pmc_<N>/<host>/<pid>_*.csv   ← raw per-PMC-group passes
+    │   │   (Opt-in nested layouts — `--subpath gpu_model`, `--subpath node_name`,
+    │   │    or omitted `-p` — move the above under a `<gpu_model>/` or `<hostname>/`
+    │   │    child; helpers handle either form.)
     │   ├── rpc_ts_<tag>/                   ← optional `rocprofv3 -P` windowed PMC pass
     │   │   └── <pid>_counter_collection.csv ← one CSV per window; see Recipe 2b
     │   ├── pcsamp_<tag>/                   ← rocprofv3 PC sampling output

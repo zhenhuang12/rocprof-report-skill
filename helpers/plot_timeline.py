@@ -50,6 +50,8 @@ try:
 except ImportError as e:  # pragma: no cover
     raise ImportError("pandas is required") from e
 
+from rocprof_utils import _resolve_workload_dir, safe_tag  # noqa: E402
+
 
 DEFAULT_COUNTERS = [
     # Verified PMC counters on gfx942 / gfx950. The granular wait-reason
@@ -141,10 +143,10 @@ def plot_per_cu(rpc_dir, counters, rows, cols):
     If neither shape is present (the build only exposes chip-wide sums),
     returns a single explanatory line.
     """
-    rpc = Path(rpc_dir)
+    rpc = _resolve_workload_dir(Path(rpc_dir))
     pmc_csv = rpc / "pmc_perf.csv"
     if not pmc_csv.exists():
-        return [f"\nper-CU mode: no pmc_perf.csv under {rpc}"]
+        return [f"\nper-CU mode: no pmc_perf.csv under {rpc_dir} (also tried */pmc_perf.csv glob)"]
     df = pd.read_csv(pmc_csv)
     lines = [f"\n{'=' * 60}\nper-CU: {pmc_csv}\n{'=' * 60}"]
 
@@ -263,8 +265,9 @@ def main():
 
     # Suffix the output file with the tags so back-to-back invocations on
     # different runs (or different sets of tags within one run) don't silently
-    # clobber each other.
-    suffix = "_".join(args.tag)
+    # clobber each other. Sanitize each tag separately so a tag containing
+    # a "/" doesn't create unintended subdirectories.
+    suffix = "_".join(safe_tag(t) for t in args.tag)
     out_path = analysis_dir / f"timeline_plots_{suffix}.txt"
     if out_path.exists():
         print(

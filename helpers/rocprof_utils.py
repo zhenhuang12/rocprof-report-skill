@@ -1,17 +1,20 @@
 """Shared helpers for parsing rocprofv3 / rocprof-compute outputs.
 
 Designed to work with both:
-  - rocprof-compute (ROCm 6.3+): writes a workload directory NESTED under
-    `<-p>/<gpu_model>/` (default `--subpath gpu`, e.g. `rpc_<tag>/MI300X/`),
-    containing a merged `pmc_perf.csv`, `timestamps.csv` (per-dispatch
-    Start/End_Timestamp), `sysinfo.csv` (wide single-row format, NOT
-    param/value), `roofline.csv` (when roofline ran; default-on, suppress
-    with `--no-roof`), `empirRoof_gpu-0_<datatypes>.pdf` PDF plots (only
-    with `--roof-only` / `--kernel-names`), `log.txt`, and
-    `profiling_config.yaml`, plus raw per-PMC-group CSVs under
-    `out/pmc_<N>/<hostname>/<pid>_*.csv`.
-    `load_rpc_dir` accepts the `-p` value and auto-resolves the
-    `<gpu_model>/` child via glob.
+  - rocprof-compute (ROCm 6.3+): with an explicit `-p <path>` and the
+    default `--subpath gpu`, artifacts land FLAT directly under `<-p>`:
+    `pmc_perf.csv`, `timestamps.csv` (per-dispatch Start/End_Timestamp),
+    `sysinfo.csv` (wide single-row format, NOT param/value),
+    `roofline.csv` (when roofline ran; default-on, suppress with
+    `--no-roof`), `empirRoof_gpu-0_<datatypes>.pdf` PDF plots (only with
+    `--roof-only` / `--kernel-names`), `log.txt`, `profiling_config.yaml`,
+    plus raw per-PMC-group CSVs under `out/pmc_<N>/<hostname>/<pid>_*.csv`.
+    The default `--subpath "gpu"` matches neither nesting branch in
+    `rocprof_compute_base.py`; only `--subpath gpu_model` (adds
+    `<gpu_model>/`), `--subpath node_name` (adds `<hostname>/`), or
+    omitting `-p` entirely (auto-appends `<name>/<gpu_model>/`) injects a
+    child dir. `load_rpc_dir` accepts EITHER layout — see
+    `_resolve_workload_dir`.
   - ROCm 7.x: rocprofv3 defaults to a single `.db` per run using the
     rocpd schema (the optional `rocpd` Python helper, or plain sqlite3).
 
@@ -39,17 +42,27 @@ except ImportError as e:  # pragma: no cover
     ) from e
 
 
+# --- Filename helpers --------------------------------------------------------
+
+_TAG_SAFE = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-")
+
+
+def safe_tag(tag: str) -> str:
+    """Make a tag safe to embed in a filename: keep [A-Za-z0-9._-], else '_'."""
+    return "".join(ch if ch in _TAG_SAFE else "_" for ch in tag) or "untagged"
+
+
 # --- Loading rocprof-compute output dirs ------------------------------------
 
 def _resolve_workload_dir(rpc_dir: Path) -> Path:
     """Resolve the directory that actually contains pmc_perf.csv.
 
-    rocprof-compute's default `--subpath gpu` nests the workload under a
-    `<gpu_model>/` child (e.g. `rpc_<tag>/MI300X/`). Callers pass us the
-    `-p` value (`rpc_<tag>`); we glob one level down to find the real
-    workload dir. If no nested match, we fall back to the input dir —
-    this preserves backward compat with flat layouts (e.g. someone using
-    `--subpath node_name` and a custom layout).
+    Default rocprof-compute (explicit `-p`, `--subpath gpu`) writes flat
+    directly under `<-p>`, so the common case is `rpc_dir/pmc_perf.csv`.
+    If the caller opted into a nested layout (`--subpath gpu_model`,
+    `--subpath node_name`, or omitted `-p` entirely so the auto
+    `<name>/<gpu_model>/` append fires), we glob one level down to find
+    the real workload dir.
     """
     if (rpc_dir / "pmc_perf.csv").exists():
         return rpc_dir
@@ -64,8 +77,9 @@ def load_rpc_dir(rpc_dir, kernel_regex=None, kernel_trace_csv=None):
 
     Args:
         rpc_dir: path to a rocprof-compute profile output (the `-p` arg).
-            May be the `-p` value directly or its `<gpu_model>/` child — we
-            glob-resolve either way.
+            Default layout is flat directly under `-p`; opt-in nested
+            layouts (a `<gpu_model>/` or `<hostname>/` child) are also
+            accepted and resolved via glob.
         kernel_regex: if given, filter pmc CSVs to dispatches whose
             Kernel_Name matches this regex (column lives in pmc_perf.csv).
         kernel_trace_csv: optional path to a rocprofv3 `kernel_trace.csv`
@@ -397,7 +411,11 @@ def dump_all_counters(rpc, outpath):
 
 def dump_key_counters(rpc, arch, outpath_json, outpath_txt=None):
     """Dump the curated key-counter set to JSON (+ optional plain-text)."""
-    keys = key_counters_for_arch(arch or detect_arch(rpc) or "gfx942")
+    # Resolve arch ONCE so the counter set and the recorded __arch__ value
+    # cannot drift. The on-disk artifacts then accurately name the counter
+    # list that was actually used.
+    resolved_arch = arch or detect_arch(rpc) or "gfx942"
+    keys = key_counters_for_arch(resolved_arch)
     out = {}
     pmc = rpc.get("pmc")
     for k in keys:
@@ -409,7 +427,7 @@ def dump_key_counters(rpc, arch, outpath_json, outpath_txt=None):
                 v = f"<error: {e}>"
         out[k] = v
     out["__duration_ns__"] = kernel_duration_ns(rpc)
-    out["__arch__"] = arch or detect_arch(rpc)
+    out["__arch__"] = resolved_arch
     Path(outpath_json).write_text(json.dumps(out, indent=2, default=str))
     if outpath_txt:
         with open(outpath_txt, "w") as f:

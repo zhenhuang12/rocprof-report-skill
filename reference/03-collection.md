@@ -77,8 +77,8 @@ rocprof-compute profile \
 | `-n` / `--name` | Workload name used in report titles and folded into the output path (see `-p` below). |
 | `--no-roof` | Skip the empirical roofline benchmarks (otherwise they run by default and add ~30 s). |
 | `-k` / `--kernel` | Filter on demangled kernel names (substring, accepts multiple values). Limits the kernels measured per PMC group. (Note: the flag is `--kernel`, not `--kernel-name`.) |
-| `-p` / `--path` | Output root. rocprof-compute does **not** write flat under `-p` — by default `--subpath` is `gpu`, so the actual workload lands at `<-p>/<gpu_model>/` (e.g. `rpc_<tag>/MI300X/pmc_perf.csv`). When `-p` is omitted, output defaults to `<cwd>/workloads/<name>/<gpu_model>/`. Artifacts under that workload dir: `pmc_perf.csv`, `timestamps.csv`, `sysinfo.csv`, `log.txt`, `roofline.csv` (when roofline ran), PDF plots named `empirRoof_gpu-0_<datatypes>.pdf` (only with `--roof-only` or `--kernel-names`), `profiling_config.yaml`, plus `perfmon/<group>.{txt,yaml}` and `out/pmc_<N>/<hostname>/<pid>_{kernel_trace,counter_collection,agent_info}.csv` raw-per-pass subdirs. **The helpers in `$SKILL/helpers/` auto-resolve the nested `<gpu_model>/` child** — just pass them the `-p` value you used here. To force a flat layout instead, pass `--subpath node_name` (output then lands at `<-p>/<hostname>/`) — but then you must update the helper-facing paths to match. |
-| `-b` / `--block` | Filter to specific metric IDs (e.g. `12.1.1`), block IDs (e.g. `12`), or block aliases (e.g. `lds`, `l1i`, `sl1d`). |
+| `-p` / `--path` | Output root. With an explicit `-p` and the default `--subpath gpu`, rocprof-compute writes **flat directly under `-p`**: `pmc_perf.csv`, `timestamps.csv`, `sysinfo.csv`, `log.txt`, `roofline.csv` (when roofline ran), PDF plots named `empirRoof_gpu-0_<datatypes>.pdf` (only with `--roof-only` or `--kernel-names`), `profiling_config.yaml`, plus `perfmon/<group>.{txt,yaml}` and `out/pmc_<N>/<hostname>/<pid>_{kernel_trace,counter_collection,agent_info}.csv` raw-per-pass subdirs all land directly there. The default `--subpath` value `"gpu"` matches neither nesting branch in `rocprof_compute_base.py`; only `--subpath gpu_model` adds a `<gpu_model>/` child, and `--subpath node_name` adds a `<hostname>/` child. When `-p` is **omitted** (resolved value equals the argparser default `<cwd>/workloads`), rocprof-compute auto-appends `<name>/<gpu_model>/`, giving `<cwd>/workloads/<name>/<gpu_model>/`. The helpers in `$SKILL/helpers/` accept either form — they first check `<-p>/pmc_perf.csv` and fall back to globbing `<-p>/*/pmc_perf.csv` for the opt-in nested layout. |
+| `-b` / `--block` | In **analyze** mode (`rocprof-compute analyze -b`): pass a metric ID (e.g. `12.1.1`) or top-level section ID (e.g. `12`). No alias map — `-b lds` / `-b l1i` are not recognized; use `rocprof-compute analyze --list-metrics <gfx>` to find the right ID. In **profile** mode (`rocprof-compute profile -b`): the validator is `validate_block`, which accepts only the uppercase hardware-block names `{SQ, SQC, TA, TD, TCP, TCC, SPI, CPC, CPF}`. |
 
 Replay count: ~15-30 passes (one per PMC group; rocprofv3 replays the whole binary, not just the kernel). Wall time: kernel time × number of groups + init.
 
@@ -152,7 +152,7 @@ rocprofv3 --pc-sampling-beta-enabled \
 | `--pc-sampling-beta-enabled` | **Required in ROCm 6.4+** — PC sampling is still a beta feature; sets `ROCPROFILER_PC_SAMPLING_BETA_ENABLED=1` internally. |
 | `--pc-sampling-method` | `stochastic` (MI300+) is the only mode that populates `Stall_Reason`. `host_trap` (MI200+) is portable but gives PC hotspots only. **Note the underscore in `host_trap` — not `host-trap`.** |
 | `--pc-sampling-interval` | Sample every N units (per `--pc-sampling-unit`). For `stochastic` + `cycles`, `1048576` (= 2^20) is a sensible default; for `host_trap` + `time`, units are **microseconds** (`1000` = 1 ms). |
-| `--pc-sampling-unit` | **`stochastic` requires `cycles` or `instructions`** (NOT `time`). **`host_trap` requires `time`** (`cycles` / `instructions` are rejected at runtime as "PC sampling configuration is not supported"). |
+| `--pc-sampling-unit` | **`stochastic`**: use `cycles` (canonical; the only unit shown in upstream examples). The SDK enum also has `ROCPROFILER_PC_SAMPLING_UNIT_INSTRUCTIONS`, but it may not be wired through the CLI in your build — verify first. `time` is runtime-rejected on `stochastic`. **`host_trap`** requires `time` (`cycles` / `instructions` are rejected at runtime as "PC sampling configuration is not supported"). |
 | `--kernel-include-regex` | Limits sampling to matching kernels. |
 | `-f` / `--output-format` | Format of output: `{csv, json, pftrace, otf2, rocpd}`. Use `csv` for downstream pandas parsing. |
 
@@ -173,10 +173,10 @@ Host_trap CSV columns are a strict subset: `Sample_Timestamp`, `Exec_Mask`, `Dis
 
 | `--pc-sampling-method` ↓ \ `--pc-sampling-unit` → | `cycles` | `instructions` | `time` (µs) |
 |---|---|---|---|
-| `stochastic` (MI300+) | ✅ supported, populates `Stall_Reason` | ✅ supported, populates `Stall_Reason` | ❌ runtime-rejected |
+| `stochastic` (MI300+) | ✅ canonical, populates `Stall_Reason` | ⚠️ SDK supports `ROCPROFILER_PC_SAMPLING_UNIT_INSTRUCTIONS` but the CLI / current builds may reject it — upstream PC-sampling examples use `cycles` only; verify before relying on it | ❌ runtime-rejected |
 | `host_trap`           | ❌ runtime-rejected | ❌ runtime-rejected | ✅ supported, hotspots only (no `Stall_Reason`) |
 
-Pick the row by data need (wait-reason vs hotspots-only), then the column by what's accepted on the row.
+Pick the row by data need (wait-reason vs hotspots-only), then the column by what's accepted on the row. **When in doubt for stochastic, use `cycles`** — that's the only unit demonstrated in the upstream `using-pc-sampling.html` examples.
 
 **Host_trap alternative (cheaper, hotspots only):**
 
@@ -206,7 +206,7 @@ Heavier — captures every wave's instruction stream on the targeted CU(s). Defa
 # omit the flag to fall back to the rocprofv3 default (1).
 rocprofv3 --att \
     --att-target-cu 0 \
-    --att-buffer-size 0x10000000 \
+    --att-buffer-size 0x6000000 \
     --att-shader-engine-mask 0xF \
     --kernel-include-regex "KERNEL_REGEX" \
     -d $PROFILE_RUN_DIR/reports/att_<tag> \
@@ -218,7 +218,7 @@ rocprofv3 --att \
 | `--att` | Enable Advanced Thread Trace. |
 | `--att-target-cu N` | Capture this CU index (within each enabled SE). Default is `1`; `0` is equally valid. Both are plain indices — there's no special-case meaning. To cover more CUs, run multiple invocations or script around it. |
 | `--att-shader-engine-mask` | Bitmask of SEs to enable. `0xF` = first 4 SEs. |
-| `--att-buffer-size` | Per-SE trace buffer in bytes. **Default `0x10000000` (256 MB)** per `rocprofv3 --help`, so the value above is the default; bump it only if traces report truncation. |
+| `--att-buffer-size` | Per-SE trace buffer in bytes. The upstream thread-trace docs cite a typical value of `0x6000000` (96 MB), with a supported range of 1 MB – 2 GB; the value above matches that. Bump it (e.g. `0x40000000` = 1 GB) only if traces report truncation. |
 
 Output: per-SE JSON / binary traces; open with ROCprof Compute Viewer or process programmatically via the `att_tool` JSON. Source attribution requires `-gline-tables-only`/`-g`.
 
@@ -350,11 +350,11 @@ If the kernel is called multiple times and you want different iterations:
 # "skip" flag like ncu -s); instead, use --kernel-iteration-range:
 rocprofv3 --kernel-trace \
     --kernel-include-regex "my_kernel" \
-    --kernel-iteration-range "[6:9]" \
-    -d $PROFILE_RUN_DIR/reports/trace_iter6_8 -- ./harness
+    --kernel-iteration-range "[6-9]" \
+    -d $PROFILE_RUN_DIR/reports/trace_iter6_9 -- ./harness
 ```
 
-`--kernel-iteration-range "[N:M]"` selects the Nth through Mth match (zero-indexed, half-open on some builds — check `rocprofv3 --help`). Useful for ignoring warmup or focusing on a steady-state iteration.
+`--kernel-iteration-range "[N-M]"` selects iterations N through M (1-indexed, inclusive on both ends, per the upstream `using-rocprofv3.rst` examples). Multiple ranges can be combined with commas, e.g. `"[1,2,[5-8]]"`. Useful for ignoring warmup or focusing on a steady-state iteration. (Confirm with `rocprofv3 --help` on your install; do **not** use the Python-slice form `[6:9]` — rocprofv3 uses a hyphen.)
 
 ---
 
