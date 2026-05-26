@@ -12,12 +12,13 @@ Usage examples:
             --rpc profile/myrun/reports/rpc_<tag> --tag <tag> \\
             --kernel "my_kernel"
 
-    # With explicit kernel_trace.csv for duration reporting. rocprofv3 nests
-    # the trace under <host>/<pid>/*_kernel_trace.csv; pass the actual file
-    # (the auto-resolver below uses rglob to find it).
+    # With explicit kernel_trace.csv for duration reporting. rocprofv3's
+    # default nests the trace as <host>/<pid>_*_kernel_trace.csv (<pid>_ is a
+    # filename prefix under <host>/, NOT a directory). Pass the actual file
+    # path (the auto-resolver below uses rglob to find it).
     python3 analyze_reports.py --run-dir profile/myrun \\
             --rpc profile/myrun/reports/rpc_<tag> --tag <tag> \\
-            --kernel-trace profile/myrun/reports/trace_<tag>/<host>/<pid>/<pid>_kernel_trace.csv \\
+            --kernel-trace profile/myrun/reports/trace_<tag>/<host>/<pid>_kernel_trace.csv \\
             --kernel "my_kernel"
 
     # Multiple reports → side-by-side compare. Duration is auto-resolved from

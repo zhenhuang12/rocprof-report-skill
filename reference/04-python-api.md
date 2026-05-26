@@ -359,7 +359,8 @@ arch = str(sysinfo.iloc[0]["gpu_arch"]).strip()
 peak_hbm_gbps = PEAK_HBM_BW_GBPS.get(arch, 5300.0)
 num_xcd = int(sysinfo.iloc[0]["num_xcd"])
 
-# Wall-clock duration: from rocprofv3 kernel_trace.csv (rocprof-compute has no timestamps.csv).
+# Wall-clock duration: either rocprof-compute's sibling timestamps.csv (preferred)
+# or rocprofv3's kernel_trace.csv. We use kernel_trace.csv here for the regex-filter example.
 import glob
 ktrace_csvs = glob.glob(f"{RUN}/reports/trace_<tag>/**/*_kernel_trace.csv", recursive=True)
 kt = pd.concat([pd.read_csv(p) for p in ktrace_csvs], ignore_index=True)

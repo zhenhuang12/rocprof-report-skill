@@ -48,7 +48,7 @@ rocprofv3 --kernel-trace --hip-trace --hsa-trace \
 | `--hip-trace` | Record HIP runtime API calls. |
 | `--hsa-trace` | Record HSA runtime API calls (lower-level, useful when you want to see queue / signal activity). |
 | `--kernel-include-regex` | Only trace kernels whose demangled name matches. Reduces output volume. Itanium-ABI demangled symbol — same as `llvm-objdump --syms --demangle`. |
-| `-d` | Output directory (rocprofv3 writes multiple files inside, under `%hostname%/%pid%/` by default). |
+| `-d` | Output directory. rocprofv3's default file template is `<hostname>/<pid>_<file>.csv` — `<hostname>` is a subdirectory under `-d`, `<pid>_` is a filename prefix (not a directory). Pass `--output-file <prefix>` to collapse to a flat `<prefix>_<file>.csv` directly under `-d`. |
 | `-f` / `--output-format` | `{csv, json, pftrace, otf2, rocpd}`. Pass `csv` to get the human-/pandas-friendly CSVs; the default depends on the build. |
 | `--` | Separates rocprofv3 options from the command to launch. |
 
@@ -156,7 +156,7 @@ rocprofv3 --pc-sampling-beta-enabled \
 | `--kernel-include-regex` | Limits sampling to matching kernels. |
 | `-f` / `--output-format` | Format of output: `{csv, json, pftrace, otf2, rocpd}`. Use `csv` for downstream pandas parsing. |
 
-rocprofv3 nests output under `<hostname>/` by default. With only `-d <dir>` set (no `--output-file`), the SDK's documented default path is `%hostname%/%pid%`, so the CSVs land at:
+rocprofv3 nests output under `<hostname>/` by default. With only `-d <dir>` set (no `--output-file`), the SDK's documented default file template is `<hostname>/<pid>_<file>` — `<hostname>` is a directory under `-d`, `<pid>_` is a filename prefix (NOT a `<pid>/` directory). So the CSVs land at:
 
 ```
 pcsamp_<tag>/<hostname>/<pid>_pc_sampling_stochastic.csv   # stochastic: has Stall_Reason
@@ -290,10 +290,12 @@ import os
 from pathlib import Path
 import pandas as pd
 RUN = os.environ["PROFILE_RUN_DIR"]
-# rocprof-compute profile does NOT write timestamps.csv. Per-kernel wall-clock
-# duration comes from rocprofv3's kernel_trace.csv (run a separate
-# `rocprofv3 --kernel-trace -f csv -d <path>` to produce it). rocprofv3 nests
-# the CSV under <host>/<pid>/, so rglob the trace dir rather than guessing.
+# Per-kernel wall-clock duration: prefer rocprof-compute's `timestamps.csv`
+# (sibling to `pmc_perf.csv` under `-p`), or use rocprofv3's `kernel_trace.csv`
+# from a separate `rocprofv3 --kernel-trace -f csv -d <path>` run. rocprofv3
+# nests the trace as `<host>/<pid>_*_kernel_trace.csv` by default (`<pid>` is
+# a filename prefix, not a directory), so rglob the trace dir rather than
+# guessing the hostname.
 def _load_trace(tag):
     paths = sorted(Path(f"{RUN}/reports/trace_{tag}").rglob("*_kernel_trace.csv"))
     if not paths:  # standalone `rocprofv3 --kernel-trace` form has no PID prefix
