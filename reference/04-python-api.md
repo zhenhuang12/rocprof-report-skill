@@ -71,7 +71,7 @@ if ktrace_glob:
     print(f"Total runtime: {(kt_k['End_Timestamp'] - kt_k['Start_Timestamp']).sum() / 1e3:.2f} µs")
 ```
 
-`pmc_perf.csv` columns vary by ROCm release — confirm with `pmc.columns.tolist()`. Core launch columns present on all recent releases: `Dispatch_ID, Kernel_Name, GPU_ID, Queue_ID, PID, TID, Grid_Size, Workgroup_Size, LDS_Per_Workgroup, Scratch_Per_Workitem, Arch_VGPR, Accum_VGPR, SGPR, Wave_Size` + each PMC counter as its own column. Some releases also expose `Kernel_ID` and `Correlation_ID`; treat both as optional. **There are no `VGPRs`/`SGPRs`/`AGPRs` plural columns and no `Start_Timestamp`/`End_Timestamp` columns** — use `Arch_VGPR`/`Accum_VGPR`/`SGPR` (singular) and read durations from `kernel_trace.csv`.
+`pmc_perf.csv` columns vary by ROCm release — confirm with `pmc.columns.tolist()`. Core launch columns present on all recent releases: `Dispatch_ID, Kernel_Name, GPU_ID, Queue_ID, PID, TID, Grid_Size, Workgroup_Size, LDS_Per_Workgroup, Scratch_Per_Workitem, Arch_VGPR, Accum_VGPR, SGPR` + each PMC counter as its own column. (Wave size is fixed at 64 on CDNA gfx9 and reported in `sysinfo.csv`, not as a per-dispatch `pmc_perf.csv` column on gfx942/gfx950.) Some releases also expose `Kernel_ID` and `Correlation_ID`; treat both as optional. **There are no `VGPRs`/`SGPRs`/`AGPRs` plural columns and no `Start_Timestamp`/`End_Timestamp` columns** — use `Arch_VGPR`/`Accum_VGPR`/`SGPR` (singular) and read durations from `kernel_trace.csv`.
 
 ---
 
@@ -132,47 +132,67 @@ import matplotlib  # or use the ASCII plotter in helpers/plot_timeline.py
 For PC-sampling / ATT-style per-PC data (the AMD analog of NVIDIA's per-correlation-ID per-PC counts) you read **PC-sampling CSV** or **ATT JSON**:
 
 ```python
-# PC sampling — rocprofv3 writes the CSV at a nested PID-prefixed path like
-# pcsamp_<tag>/pmc_1/<host>/<pid>_pc_sampling_host_trap_v0.csv. Glob both the
-# bare and PID-prefixed forms so this works regardless of how rocprofv3 was
-# invoked (standalone vs through rocprof-compute).
+# PC sampling — rocprofv3 writes the CSV FLAT under -d with a PID prefix:
+#   pcsamp_<tag>/<pid>_pc_sampling_stochastic.csv   (preferred: has Stall_Reason + arb_state_stall_*)
+#   pcsamp_<tag>/<pid>_pc_sampling_host_trap.csv    (PCs only, NO Stall_Reason column)
+# Glob accepts both the flat layout and the older nested form
+# (pcsamp_<tag>/pmc_1/<host>/<pid>_pc_sampling_*.csv) as a fallback so this
+# works regardless of how rocprofv3 was invoked.
 import os, glob, pandas as pd
 RUN = os.environ["PROFILE_RUN_DIR"]
 csvs = sorted(set(
-    glob.glob(f"{RUN}/reports/pcsamp_<tag>/**/pc_sampling_*.csv", recursive=True) +
-    glob.glob(f"{RUN}/reports/pcsamp_<tag>/**/*_pc_sampling_*.csv", recursive=True)
+    glob.glob(f"{RUN}/reports/pcsamp_<tag>/*_pc_sampling_*.csv") +
+    glob.glob(f"{RUN}/reports/pcsamp_<tag>/**/*_pc_sampling_*.csv", recursive=True) +
+    glob.glob(f"{RUN}/reports/pcsamp_<tag>/**/pc_sampling_*.csv", recursive=True)
 ))
 if not csvs:
     raise FileNotFoundError(f"no pc_sampling CSV under {RUN}/reports/pcsamp_<tag>")
 pcs = pd.concat([pd.read_csv(p) for p in csvs], ignore_index=True)
-# Columns: Dispatch_ID, Sample_Time_ns, Instruction_Address, Source, Instruction_Comment, Wait_Reason, Sample_Count, ...
-hot = (pcs.groupby(["Source", "Wait_Reason"])["Sample_Count"]
-          .sum().sort_values(ascending=False).head(20))
+# Stochastic columns: Sample_Timestamp, Exec_Mask, Dispatch_Id, Instruction (PC),
+#   Instruction_Comment, Correlation_Id, Wave_Issued_Instruction, Instruction_Type,
+#   Stall_Reason, Wave_Count, arb_state_stall_<cat>, arb_state_issue_<cat>, ...
+# Host_trap columns are a strict subset (no Stall_Reason).
+if "Stall_Reason" in pcs.columns:
+    # Only stalled rows carry a Stall_Reason; productive issues have Wave_Issued_Instruction == 1.
+    stalled = pcs[pcs["Wave_Issued_Instruction"] == 0]
+    hot = (stalled.groupby(["Instruction", "Stall_Reason"]).size()
+                 .sort_values(ascending=False).head(20))
+else:
+    # host_trap: hotspots only, no breakdown
+    hot = pcs.groupby("Instruction").size().sort_values(ascending=False).head(20)
 print(hot)
 ```
 
-For production use, prefer `helpers/extract_stall_hotspots.py --pcsamp-dir ...` — it handles both layouts and degrades cleanly on missing input.
+For production use, prefer `helpers/extract_stall_hotspots.py --pcsamp-dir ...` — it handles both layouts and degrades cleanly on missing input or missing `Stall_Reason` (host_trap).
 
-`Source` is `file:line` (populated only when compiled with `-gline-tables-only` / `-g`). `Instruction_Comment` is the ISA mnemonic (`global_load_dwordx4`, `v_mfma_f32_16x16x16bf16_1k`, `s_waitcnt`, …; AMDGPU MFMA mnemonics: legacy FP16/BF16/I8/F64 forms concatenate the dtype with no underscore (e.g. `v_mfma_f32_16x16x16bf16_1k`, `v_mfma_i32_32x32x16i8`); FP8/BF8/F8F6F4/XF32 forms use an underscore separator (e.g. `v_mfma_f32_16x16x32_fp8_fp8`, `v_mfma_f32_16x16x128_f8f6f4`, `v_mfma_f32_*_xf32`). Always confirm with `rocprofv3 -L | grep MFMA`). `Wait_Reason` is one of the AMD wait categories — see the table in [`05-analysis-dimensions.md`](05-analysis-dimensions.md).
+`Instruction_Comment` is the ISA mnemonic (`global_load_dwordx4`, `v_mfma_f32_16x16x16bf16_1k`, `s_waitcnt`, …; AMDGPU MFMA mnemonics: legacy FP16/BF16/I8/F64 forms concatenate the dtype with no underscore (e.g. `v_mfma_f32_16x16x16bf16_1k`, `v_mfma_i32_32x32x16i8`); FP8/BF8/F8F6F4/XF32 forms use an underscore separator (e.g. `v_mfma_f32_16x16x32_fp8_fp8`, `v_mfma_f32_16x16x128_f8f6f4`, `v_mfma_f32_*_xf32`). Always confirm with `rocprofv3 -L | grep MFMA`). Source attribution (`file:line`) is reconstructed from the `Instruction` PC via `addr2line` against the binary built with `-gline-tables-only` / `-g`. `Stall_Reason` (stochastic mode only) is one of the AMD stall categories — see the table in [`05-analysis-dimensions.md`](05-analysis-dimensions.md). See also AMD's docs: https://rocm.docs.amd.com/projects/rocprofiler-sdk/en/latest/how-to/using-pc-sampling.html
 
 ---
 
 ## Per-PC → per-source-line aggregation
 
 ```python
-def per_source_line(pcs_df, wait_reason=None):
+def per_source_line(pcs_df, stall_reason=None, *, wait_reason=None):
+    # `wait_reason` is a deprecated alias for `stall_reason` (kept for back-compat).
+    if wait_reason is not None and stall_reason is None:
+        stall_reason = wait_reason
     df = pcs_df
-    if wait_reason:
-        df = df[df["Wait_Reason"] == wait_reason]
-    agg = (df.groupby("Source")["Sample_Count"]
-             .sum().sort_values(ascending=False))
+    col = "Stall_Reason" if "Stall_Reason" in df.columns else None
+    if stall_reason and col:
+        df = df[df[col] == stall_reason]
+    group_key = "Source" if "Source" in df.columns else "Instruction"
+    count_col = "Sample_Count" if "Sample_Count" in df.columns else None
+    if count_col:
+        agg = df.groupby(group_key)[count_col].sum().sort_values(ascending=False)
+    else:
+        agg = df.groupby(group_key).size().sort_values(ascending=False)
     total = agg.sum()
     return agg.head(20).to_frame("samples").assign(pct=lambda d: d["samples"]/total*100)
 
-print(per_source_line(pcs, wait_reason="WAIT_INST_VMEM"))
+print(per_source_line(pcs, stall_reason="arb_state_stall_vmem_tex"))
 ```
 
-`extract_stall_hotspots.py` ships a complete implementation that handles both PC-sampling CSV and ATT JSON.
+`extract_stall_hotspots.py` ships a complete implementation that handles both PC-sampling CSV (stochastic + host_trap) and ATT JSON.
 
 ---
 

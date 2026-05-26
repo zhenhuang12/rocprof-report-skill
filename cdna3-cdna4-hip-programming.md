@@ -301,23 +301,26 @@ On gfx942 / gfx950, PMC only exposes a single `TCC_EA0_*` family per XCD (no `TC
 
 ## Stalls — what wait reasons mean (and where they actually come from)
 
-On gfx942 / gfx950, only **three** `SQ_WAIT_*` PMC counters exist as hardware counters: `SQ_WAIT_ANY`, `SQ_WAIT_INST_ANY`, and `SQ_WAIT_INST_LDS` (verify with `rocprofv3 -L | grep SQ_WAIT`). The finer-grained wait-reason classification (VMEM / SMEM / FLAT / BARRIER / VMCNT / LGKMCNT / EXPCNT) is **not** exposed as PMC — it lives only in PC sampling's `Wait_Reason` enum (`rocprofv3 --pc-sampling-method host_trap --pc-sampling-unit time`) and in ATT records.
+On gfx942 / gfx950, only **three** `SQ_WAIT_*` PMC counters exist as hardware counters: `SQ_WAIT_ANY`, `SQ_WAIT_INST_ANY`, and `SQ_WAIT_INST_LDS` (verify with `rocprofv3 -L | grep SQ_WAIT`). The finer-grained stall-reason classification (VALU / matrix / LDS / scalar / vmem_tex / flat / exp / barrier / misc) is **not** exposed as PMC — it lives only in PC sampling's **stochastic** CSV, in the `Stall_Reason` column and the `arb_state_stall_*` per-category counters. The `host_trap` PC-sampling CSV records only sampled PCs (so you get per-line hotspots) and does NOT contain `Stall_Reason` — use stochastic if you want a stall *breakdown*. See [AMD's PC-sampling docs](https://rocm.docs.amd.com/projects/rocprofiler-sdk/en/latest/how-to/using-pc-sampling.html).
 
-| Wait reason (PC sampling `Wait_Reason`) | Meaning | Most common cause |
+The authoritative enum is `ROCPROFILER_PC_SAMPLING_INSTRUCTION_NOT_ISSUED_REASON_*` in `/opt/rocm/include/rocprofiler-sdk/pc_sampling.h`. The stochastic CSV exposes these as both a single `Stall_Reason` column (filled only when `Wave_Issued_Instruction == 0`) and as per-category sample counts named `arb_state_stall_<cat>` (with matching `arb_state_issue_<cat>` for productive issue):
+
+| `arb_state_stall_<cat>` (from stochastic CSV) | Meaning | Most common cause |
 |---|---|---|
-| `WAIT_INST_VMEM` | vmem op in flight | Outstanding global load — increase ILP, prefetch with `global_load_lds`, fuse loads |
-| `WAIT_INST_LDS` (also `SQ_WAIT_INST_LDS` PMC) | LDS op in flight (covers bank-conflict serialization) | LDS read latency, bank conflicts, or LDS pressure |
-| `WAIT_INST_SMEM` | scalar-memory op in flight | Constant cache / kernarg latency |
-| `WAIT_INST_FLAT` | flat-addressing op in flight | Generic-addressing memory access |
-| `WAIT_BARRIER` | at `s_barrier` | Workgroup-wide sync — usually fundamental, but check if you can split barrier into halves |
-| `WAIT_VMCNT` | vmcnt > 0 | Drain outstanding vmem before continuing — usually from explicit `s_waitcnt vmcnt(0)` or mem ordering |
-| `WAIT_LGKMCNT` | lgkmcnt > 0 | Drain LDS/GDS/scalar/const before continuing |
-| `WAIT_EXPCNT` *(install-dependent)* | expcnt > 0 | Export-count drain — uncommon on compute kernels; mostly seen on graphics paths |
-| `WAIT_MISC` *(install-dependent)* | catch-all | Anything not in the above buckets — verify the exact enum set with `rocprofv3 -L` |
+| `arb_state_stall_valu` | VALU pipe busy / dependency | VALU dep chain or VALU port pressure |
+| `arb_state_stall_matrix` | MFMA pipe busy / dependency | Matrix-core throughput limit or AGPR dep |
+| `arb_state_stall_lds` | LDS op in flight (also visible via `SQ_WAIT_INST_LDS` PMC) | LDS latency, bank conflicts, or LDS pressure |
+| `arb_state_stall_lds_direct` | LDS direct-read in flight | LDS direct path latency |
+| `arb_state_stall_scalar` | scalar-memory op in flight | Constant cache / kernarg latency |
+| `arb_state_stall_vmem_tex` | vmem op in flight | Outstanding global load — increase ILP, prefetch with `global_load_lds`, fuse loads |
+| `arb_state_stall_flat` | flat-addressing op in flight | Generic-addressing memory access |
+| `arb_state_stall_exp` | export-count drain | Uncommon on compute kernels; mostly graphics paths |
+| `arb_state_stall_misc` | catch-all | Anything not in the above buckets |
+| `arb_state_stall_brmsg` | branch / message stall | Control-flow message backpressure |
 
-Scratch (= register spill) traffic does **not** have a dedicated wait-reason — diagnose it via `Scratch_Per_Workitem > 0` in launch info plus rocprof-compute's scratch / spill block (`-b 18`). Always verify the exact wait-reason enum set on your install with `rocprofv3 -L`.
+Workgroup-barrier (`s_barrier`) waits don't have a dedicated `arb_state_stall_*` bucket — diagnose them via the coarse PMC `SQ_WAIT_ANY` together with PC-sampling source-line correlation around `s_barrier` mnemonics. Scoreboard waits (`vmcnt` / `lgkmcnt` / `expcnt`) likewise don't surface as individual `arb_state_*` categories — use the PMCs `SQ_WAIT_ANY`, `SQ_WAIT_INST_ANY`, and `SQ_WAIT_INST_LDS` for the aggregate signal. Scratch (= register spill) traffic does **not** have a dedicated stall-reason — diagnose it via `Scratch_Per_Workitem > 0` in launch info plus rocprof-compute's scratch / spill block (`-b 18`). Always verify the exact enum set on your install — values vary across ROCm releases — by checking the actual columns in your stochastic CSV.
 
-A PC-sampling `WAIT_INST_VMEM` share above ~30% of samples is usually the #1 bottleneck in a non-trivial kernel. Treatments, in order:
+A PC-sampling `arb_state_stall_vmem_tex` (or `arb_state_stall_flat`) share above ~30% of samples is usually the #1 bottleneck in a non-trivial kernel. Treatments, in order:
 
 1. **Reduce traffic** — recompute, fuse, exploit symmetry, or use lower precision (FP16/BF16/FP8/FP4 on supported gens).
 2. **Hide latency with ILP** — load 4 or 8 cachelines ahead of compute (double/quad-buffer).

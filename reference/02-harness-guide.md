@@ -266,7 +266,7 @@ AMD_SERIALIZE_KERNEL=3 ./harness ...        # synchronous kernel launch — back
 HIP_LAUNCH_BLOCKING=1 ./harness ...         # CUDA-style blocking launch
 ```
 
-If feasible, also spot-check correctness with `compute-sanitizer` (NVIDIA-only — no equivalent on ROCm) — on AMD use `rocgdb`, an in-harness CPU reference, or `AMD_SERIALIZE_KERNEL=3` plus a host-side checksum. Do not embed the correctness check inside the profiling harness itself.
+For correctness checks on AMD, use `rocgdb`, an in-harness CPU reference, or `AMD_SERIALIZE_KERNEL=3` plus a host-side checksum. (ROCm has no direct equivalent of NVIDIA's `compute-sanitizer`.) Do not embed the correctness check inside the profiling harness itself.
 
 ---
 

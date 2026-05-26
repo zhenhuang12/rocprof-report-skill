@@ -128,6 +128,42 @@ Two options. Prefer PC sampling (lower overhead) when available; fall back to AT
 
 ### 3a) PC sampling
 
+**Prefer `stochastic` mode** — it's the only PC-sampling mode that populates `Stall_Reason`, and it also produces the per-category `arb_state_stall_*` / `arb_state_issue_*` counters needed for a true wait-reason breakdown. The `host_trap` mode emits sampled PCs only (good for per-line hotspots, but no wait-reason classification). See AMD's docs: https://rocm.docs.amd.com/projects/rocprofiler-sdk/en/latest/how-to/using-pc-sampling.html
+
+```bash
+# Primary: stochastic mode (MI300+; required for the granular stall breakdown)
+rocprofv3 --pc-sampling-beta-enabled \
+    --pc-sampling-method stochastic \
+    --pc-sampling-unit cycles \
+    --pc-sampling-interval 1048576 \
+    --kernel-include-regex "KERNEL_REGEX" \
+    -f csv \
+    -d $PROFILE_RUN_DIR/reports/pcsamp_<tag> \
+    -- ./harness [args]
+```
+
+| Flag | Meaning |
+|---|---|
+| `--pc-sampling-beta-enabled` | **Required in ROCm 6.4+** — PC sampling is still a beta feature; sets `ROCPROFILER_PC_SAMPLING_BETA_ENABLED=1` internally. |
+| `--pc-sampling-method` | `stochastic` (MI300+) is the only mode that populates `Stall_Reason` + `arb_state_stall_*`. `host_trap` (MI200+) is portable but gives PC hotspots only. **Note the underscore in `host_trap` — not `host-trap`.** |
+| `--pc-sampling-interval` | Sample every N units (per `--pc-sampling-unit`). For `stochastic` + `cycles`, `1048576` (= 2^20) is a sensible default; for `host_trap` + `time`, units are **microseconds** (`1000` = 1 ms). |
+| `--pc-sampling-unit` | **`stochastic` requires `cycles` or `instructions`** (NOT `time`). **`host_trap` requires `time`** (`cycles` / `instructions` are rejected at runtime as "PC sampling configuration is not supported"). |
+| `--kernel-include-regex` | Limits sampling to matching kernels. |
+| `-f` / `--output-format` | Format of output: `{csv, json, pftrace, otf2, rocpd}`. Use `csv` for downstream pandas parsing. |
+
+Output paths land **flat** under `-d` with a PID prefix (NOT nested under `pmc_1/<host>/`, which is the PMC counter-collection layout):
+
+```
+pcsamp_<tag>/<pid>_pc_sampling_stochastic.csv   # stochastic: has Stall_Reason + arb_state_stall_*
+pcsamp_<tag>/<pid>_pc_sampling_host_trap.csv    # host_trap: sampled PCs only, NO Stall_Reason
+```
+
+Stochastic CSV columns: `Sample_Timestamp`, `Exec_Mask`, `Dispatch_Id`, `Instruction` (PC), `Instruction_Comment` (the ISA mnemonic — the SASS-equivalent text on AMD), `Correlation_Id`, `Wave_Issued_Instruction` (0 = stalled / 1 = productively issued), `Instruction_Type`, `Stall_Reason` (populated only when `Wave_Issued_Instruction == 0`), `Wave_Count`, and per-category counters `arb_state_stall_{valu, matrix, lds, lds_direct, scalar, vmem_tex, flat, exp, misc, brmsg}` (with matching `arb_state_issue_*`). Source attribution (`file:line`) requires `-gline-tables-only`/`-g` on the build and is reconstructed from `Instruction` via `addr2line` against the binary.
+
+Host_trap CSV columns are a strict subset: `Sample_Timestamp`, `Exec_Mask`, `Dispatch_Id`, `Instruction`, `Instruction_Comment`, `Correlation_Id`. Use it only if you need cheap per-line hotspots and don't care about the wait-reason breakdown.
+
+**Host_trap alternative (cheaper, hotspots only):**
+
 ```bash
 rocprofv3 --pc-sampling-beta-enabled \
     --pc-sampling-method host_trap \
@@ -139,33 +175,9 @@ rocprofv3 --pc-sampling-beta-enabled \
     -- ./harness [args]
 ```
 
-| Flag | Meaning |
-|---|---|
-| `--pc-sampling-beta-enabled` | **Required in ROCm 6.4+** — PC sampling is still a beta feature; sets `ROCPROFILER_PC_SAMPLING_BETA_ENABLED=1` internally. |
-| `--pc-sampling-method` | `host_trap` (works on MI200+) is the most portable; `stochastic` is lower-overhead on MI300+ if your ROCm build enables it. **Note the underscore — not `host-trap`.** |
-| `--pc-sampling-interval` | Sample every N units (per `--pc-sampling-unit`). For `host_trap` + `time`, units are **microseconds** (the rocprof-compute default is 1048576 µs ≈ 1 s, which is FAR too coarse for short kernels). `1000` = 1 ms is a sensible starting point; drop to `100` for sub-ms kernels. |
-| `--pc-sampling-unit` | **`host_trap` only accepts `time`** — passing `cycles` or `instructions` with `host_trap` is rejected at runtime as "PC sampling configuration is not supported". `cycles` and `instructions` are for `stochastic`. |
-| `--kernel-include-regex` | Limits sampling to matching kernels. |
-| `-f` / `--output-format` | Format of output: `{csv, json, pftrace, otf2, rocpd}`. Use `csv` for downstream pandas parsing; default writes to `%hostname%/%pid%/` structure. |
+If `stochastic` is rejected on your build with "PC sampling configuration is not supported", fall back to `host_trap` — you'll get per-line hotspots but no `Stall_Reason` breakdown.
 
-Output: per-kernel CSV with `Instruction_Address`, `Source` (file:line, populated only when compiled with `-gline-tables-only`/`-g`), `Instruction_Comment` (the SASS-equivalent text on AMD: the ISA mnemonic), `Wait_Reason`, `Sample_Count`.
-
-**Stochastic alternative (MI300+; lower overhead, only if your ROCm build enables it):**
-
-```bash
-rocprofv3 --pc-sampling-beta-enabled \
-    --pc-sampling-method stochastic \
-    --pc-sampling-unit cycles \
-    --pc-sampling-interval 1048576 \
-    --kernel-include-regex "KERNEL_REGEX" \
-    -f csv \
-    -d $PROFILE_RUN_DIR/reports/pcsamp_<tag> \
-    -- ./harness [args]
-```
-
-For `stochastic` the unit MUST be `cycles` or `instructions` (NOT `time`). `1048576` (= 2^20) cycles is a sensible default; lower the value for short kernels but expect higher overhead. If your build rejects stochastic with "PC sampling configuration is not supported", fall back to `host_trap`.
-
-Use `extract_stall_hotspots.py` to aggregate these by `(file, line)` and by wait reason.
+Use `extract_stall_hotspots.py` to aggregate stochastic samples by `(file, line)` and by stall reason; on a host_trap CSV the helper degrades gracefully to per-line hotspot ranking only.
 
 ### 3b) ATT (Advanced Thread Trace / SQTT)
 

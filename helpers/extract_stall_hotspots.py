@@ -1,38 +1,47 @@
 #!/usr/bin/env python3
 """Aggregate AMD per-PC stall samples into per-source-line hotspots.
 
-Reads PC-sampling CSV produced by:
-    # Note the underscore in `host_trap` (not `host-trap`).
-    # `host_trap` only supports `--pc-sampling-unit time`; the `cycles` and
-    # `instructions` units are stochastic-only.
-    # For host_trap + time, --pc-sampling-interval is in MICROSECONDS
-    # (1000 = 1 ms).
+Reads PC-sampling CSV produced by rocprofv3. The two modes produce different
+schemas — prefer STOCHASTIC, which is the only mode that emits `Stall_Reason`:
+
+    # Stochastic (preferred — has Stall_Reason + per-category arb_state_stall_*):
     rocprofv3 --pc-sampling-beta-enabled \\
-        --pc-sampling-method host_trap \\
-        --pc-sampling-interval 1000 --pc-sampling-unit time \\
+        --pc-sampling-method stochastic \\
+        --pc-sampling-interval 1048576 --pc-sampling-unit cycles \\
         --kernel-include-regex "<regex>" \\
         -f csv \\
         -d <pcsamp_dir> -- ./harness [args]
 
-The CSV file name is install-specific (e.g. pc_sampling_host_trap_v0.csv);
-pass `--pcsamp-dir <pcsamp_dir>` to let this script glob for it.
+    # Host_trap (cheaper, hotspots only — no Stall_Reason column):
+    #   --pc-sampling-method host_trap --pc-sampling-interval 1000 --pc-sampling-unit time
 
-The CSV columns are typically:
-    Dispatch_ID, Sample_Time_ns, Instruction_Address,
-    Source (file:line; blank without -gline-tables-only),
-    Instruction_Comment (ISA mnemonic), Wait_Reason, Sample_Count
+See https://rocm.docs.amd.com/projects/rocprofiler-sdk/en/latest/how-to/using-pc-sampling.html
+
+Output paths are FLAT (no nesting) under -d with a PID prefix:
+    <pcsamp_dir>/<pid>_pc_sampling_stochastic.csv
+    <pcsamp_dir>/<pid>_pc_sampling_host_trap.csv
+
+Stochastic CSV columns:
+    Sample_Timestamp, Exec_Mask, Dispatch_Id, Instruction (PC),
+    Instruction_Comment (ISA mnemonic), Correlation_Id,
+    Wave_Issued_Instruction (0 = stalled, 1 = issued), Instruction_Type,
+    Stall_Reason (populated only when Wave_Issued_Instruction == 0),
+    Wave_Count, arb_state_stall_<cat>, arb_state_issue_<cat>, ...
+
+Host_trap CSV columns are a strict subset (no Stall_Reason).
 
 Also supports ATT JSON aggregation (one JSON per CU/SE under att_<tag>/).
 
 Produces in `<run-dir>/analysis/`:
     stall_hotspots_<tag>.txt — top lines ranked by total sample count,
-                               with per-Wait_Reason breakdown, plus
-                               per-Wait_Reason top lines.
+                               with per-Stall_Reason breakdown (stochastic only),
+                               plus per-Stall_Reason top lines.
 
 Usage:
-    # PC sampling (preferred — lower overhead). Either pass the CSV directly
-    # via --pcsamp, or pass the directory via --pcsamp-dir and let the script
-    # glob `pc_sampling_*.csv` inside it.
+    # PC sampling (preferred — pass the CSV directly via --pcsamp, or
+    # the directory via --pcsamp-dir and let the script glob inside it.
+    # The dir glob accepts both the flat layout and the older nested
+    # `pmc_1/<host>/...` form as a fallback.)
     python3 extract_stall_hotspots.py --run-dir profile/myrun \\
             --pcsamp-dir profile/myrun/reports/pcsamp_<tag> \\
             --tag <tag>
@@ -56,23 +65,23 @@ sys.path.insert(0, str(HERE))
 from rocprof_utils import load_pcsamp_csv  # noqa: E402
 
 
-def write_report(per_line, totals_by_wait, out_path, tag, top_n=30):
-    """per_line: dict[(file, line)] -> dict[wait_reason -> count]."""
+def write_report(per_line, totals_by_stall, out_path, tag, top_n=30):
+    """per_line: dict[(file_or_pc, line)] -> dict[stall_reason -> count]."""
     rows = []
-    for (fn, ln), waits in per_line.items():
-        total = sum(waits.values())
-        rows.append((total, fn, ln, dict(waits)))
+    for (fn, ln), stalls in per_line.items():
+        total = sum(stalls.values())
+        rows.append((total, fn, ln, dict(stalls)))
     rows.sort(key=lambda x: -x[0])
 
     grand_total = sum(r[0] for r in rows) or 1
 
     with open(out_path, "w") as f:
         f.write(f"===== Stall hotspots for {tag} =====\n")
-        f.write(f"Distinct (file, line) entries: {len(rows)}\n")
+        f.write(f"Distinct entries: {len(rows)}\n")
         f.write(f"Total samples: {grand_total}\n\n")
-        f.write(f"{'Rank':>4} {'Total':>10} {'Pct':>7}  {'File:Line':<60}  Top wait reasons\n")
+        f.write(f"{'Rank':>4} {'Total':>10} {'Pct':>7}  {'File:Line (or PC)':<60}  Top stall reasons\n")
         f.write("-" * 160 + "\n")
-        for i, (total, fn, ln, waits) in enumerate(rows[:top_n]):
+        for i, (total, fn, ln, stalls) in enumerate(rows[:top_n]):
             short = fn if fn else "?"
             # Files may already be 'file:line' from the Source column
             if ln and ln != "?":
@@ -81,15 +90,15 @@ def write_report(per_line, totals_by_wait, out_path, tag, top_n=30):
                 disp = str(short)
             breakdown = ", ".join(
                 f"{w}={c} ({c/total*100:.0f}%)"
-                for w, c in sorted(waits.items(), key=lambda x: -x[1])[:4] if c
+                for w, c in sorted(stalls.items(), key=lambda x: -x[1])[:4] if c
             )
             f.write(f"{i:>4} {total:>10} {total/grand_total*100:>6.1f}%  {disp:<60}  {breakdown}\n")
 
-        f.write("\n\n===== Per wait-reason top lines =====\n")
-        for wr in sorted(totals_by_wait, key=lambda x: -totals_by_wait[x]):
-            f.write(f"\n--- {wr} ({totals_by_wait[wr]} samples, "
-                    f"{totals_by_wait[wr]/grand_total*100:.1f}%) ---\n")
-            items = [((fn, ln), waits.get(wr, 0)) for (fn, ln), waits in per_line.items()]
+        f.write("\n\n===== Per stall-reason top lines =====\n")
+        for sr in sorted(totals_by_stall, key=lambda x: -totals_by_stall[x]):
+            f.write(f"\n--- {sr} ({totals_by_stall[sr]} samples, "
+                    f"{totals_by_stall[sr]/grand_total*100:.1f}%) ---\n")
+            items = [((fn, ln), stalls.get(sr, 0)) for (fn, ln), stalls in per_line.items()]
             items = [it for it in items if it[1] > 0]
             items.sort(key=lambda x: -x[1])
             for (fn, ln), v in items[:10]:
@@ -98,29 +107,58 @@ def write_report(per_line, totals_by_wait, out_path, tag, top_n=30):
 
 
 def aggregate_pcsamp(csv_path):
-    """Load PC-sampling CSV, return (per_line, totals_by_wait).
+    """Load PC-sampling CSV, return (per_line, totals_by_stall).
 
-    per_line[(file, line)] -> dict[wait_reason -> sample_count]
-    totals_by_wait[wait_reason] -> total
+    Handles both the stochastic schema (has `Stall_Reason`) and the host_trap
+    schema (per-line hotspots only). When `Source` (file:line) isn't populated,
+    falls back to the `Instruction` PC as the grouping key. When `Sample_Count`
+    isn't present (the stochastic CSV is one-row-per-sample), counts rows.
+
+    per_line[(file_or_pc, line)] -> dict[stall_reason -> count]
+    totals_by_stall[stall_reason] -> total
     """
     df = load_pcsamp_csv(csv_path)
     per_line = defaultdict(lambda: defaultdict(int))
     totals = defaultdict(int)
-    src_col = "Source" if "Source" in df.columns else None
-    wait_col = "Wait_Reason" if "Wait_Reason" in df.columns else None
-    count_col = "Sample_Count" if "Sample_Count" in df.columns else None
-    if src_col is None or count_col is None:
+    # Group key: prefer "Source" (file:line) when present, else the PC ("Instruction").
+    if "Source" in df.columns:
+        src_col = "Source"
+        is_source = True
+    elif "Instruction" in df.columns:
+        src_col = "Instruction"
+        is_source = False
+    else:
         raise RuntimeError(
-            f"Expected 'Source' and 'Sample_Count' in {csv_path}; got {df.columns.tolist()}"
+            f"Expected 'Source' or 'Instruction' in {csv_path}; got {df.columns.tolist()}"
         )
-    if wait_col is None:
-        wait_col = "__no_wait_reason__"
-        df[wait_col] = "(unknown)"
-    for src, wait, cnt in zip(df[src_col].astype(str), df[wait_col].astype(str), df[count_col]):
-        # Source is typically "file:line" or "file:line:col" — pull off the
-        # trailing numeric line (and optional column) so we don't mangle paths
-        # that contain colons (Windows drive letters, URLs).
-        fn, ln = _split_source(src)
+    # Stall reason: the real column is `Stall_Reason` (stochastic mode).
+    # `Wait_Reason` is checked as a back-compat fallback only.
+    if "Stall_Reason" in df.columns:
+        stall_col = "Stall_Reason"
+    elif "Wait_Reason" in df.columns:
+        stall_col = "Wait_Reason"  # legacy/back-compat — newer CSVs don't have this
+    else:
+        stall_col = "__no_stall_reason__"
+        df[stall_col] = "(hotspot)"  # host_trap mode: per-line hotspots only
+    # Sample weight: rocprof-compute aggregations may have `Sample_Count`; raw
+    # stochastic CSVs are one-row-per-sample, so we count rows when absent.
+    count_col = "Sample_Count" if "Sample_Count" in df.columns else None
+
+    # Optionally filter to stalled rows when both fields exist.
+    if "Wave_Issued_Instruction" in df.columns and stall_col != "__no_stall_reason__":
+        df = df[(df["Wave_Issued_Instruction"] == 0) | (df["Wave_Issued_Instruction"] == "0")]
+
+    if count_col is not None:
+        iterator = zip(df[src_col].astype(str), df[stall_col].astype(str), df[count_col])
+    else:
+        iterator = zip(df[src_col].astype(str), df[stall_col].astype(str), [1] * len(df))
+
+    for src, stall, cnt in iterator:
+        if is_source:
+            fn, ln = _split_source(src)
+        else:
+            # PC value: keep it intact as the grouping key; no file:line split.
+            fn, ln = src, "?"
         if fn == "nan" or fn == "":
             # PC samples with no source attribution would otherwise pile into
             # a single fake "nan" hotspot.
@@ -131,8 +169,8 @@ def aggregate_pcsamp(csv_path):
             c = 0
         if c <= 0:
             continue
-        per_line[(fn, ln)][wait] += c
-        totals[wait] += c
+        per_line[(fn, ln)][stall] += c
+        totals[stall] += c
     return per_line, totals
 
 
@@ -161,8 +199,9 @@ def _split_source(src):
 
 
 def aggregate_att_json_dir(att_dir):
-    """Best-effort ATT JSON aggregator. Sums any 'wait_reason' / 'sample_count'
-    fields keyed by source. Returns (per_line, totals_by_wait)."""
+    """Best-effort ATT JSON aggregator. Sums any 'stall_reason' / 'sample_count'
+    fields keyed by source. Returns (per_line, totals_by_stall). Accepts
+    `wait_reason` / `Wait_Reason` keys as a back-compat alias for older traces."""
     per_line = defaultdict(lambda: defaultdict(int))
     totals = defaultdict(int)
     for jp in glob.glob(str(Path(att_dir) / "**" / "*.json"), recursive=True):
@@ -174,7 +213,12 @@ def aggregate_att_json_dir(att_dir):
         def walk(node):
             if isinstance(node, dict):
                 src = node.get("source") or node.get("Source")
-                wait = node.get("wait_reason") or node.get("Wait_Reason")
+                stall = (
+                    node.get("stall_reason")
+                    or node.get("Stall_Reason")
+                    or node.get("wait_reason")      # legacy alias
+                    or node.get("Wait_Reason")      # legacy alias
+                )
                 cnt = node.get("sample_count") or node.get("Sample_Count")
                 if src and cnt:
                     fn, ln = _split_source(str(src))
@@ -187,7 +231,7 @@ def aggregate_att_json_dir(att_dir):
                     except (TypeError, ValueError):
                         c = 0
                     if c > 0:
-                        w = wait or "(unknown)"
+                        w = stall or "(unknown)"
                         per_line[(fn, ln)][w] += c
                         totals[w] += c
                 for v in node.values():
@@ -202,14 +246,22 @@ def aggregate_att_json_dir(att_dir):
 def _resolve_pcsamp_dir(d):
     """Recursively glob a pcsamp_<tag> directory for the PC-sampling CSV.
 
-    rocprofv3 writes the CSV at a nested path like
-    `<pcsamp_dir>/pmc_1/<host>/<pid>_pc_sampling_host_trap_v0.csv`, so a
-    non-recursive `glob` silently returns no matches. We use `rglob` and accept
-    both the bare `pc_sampling_*.csv` and the rocprofv3-pid-prefixed form.
+    rocprofv3 writes the CSV FLAT under -d with a PID prefix, e.g.
+    `<pcsamp_dir>/<pid>_pc_sampling_stochastic.csv` or
+    `<pcsamp_dir>/<pid>_pc_sampling_host_trap.csv`. We also accept the older
+    nested layout (`pmc_1/<host>/...`) as a fallback so this script keeps
+    working across rocprofv3 versions.
+
+    When both stochastic and host_trap CSVs are present, we prefer **stochastic**
+    — it's the only mode that emits `Stall_Reason` + per-category
+    `arb_state_stall_*` counters needed for a true wait-reason breakdown.
+    Caller can pass --pcsamp directly to override.
     """
     base = Path(d)
-    matches = sorted(base.rglob("pc_sampling_*.csv"))
+    # Flat layout first (current rocprofv3), then nested fallback.
+    matches = sorted(base.glob("*_pc_sampling_*.csv"))
     matches += sorted(base.rglob("*_pc_sampling_*.csv"))
+    matches += sorted(base.rglob("pc_sampling_*.csv"))
     # De-dup while preserving order.
     seen = set()
     matches = [m for m in matches if not (m in seen or seen.add(m))]
@@ -218,8 +270,10 @@ def _resolve_pcsamp_dir(d):
             f"No pc_sampling_*.csv found under {base}; check rocprofv3 -f csv was set"
         )
     if len(matches) > 1:
-        # Multiple CSVs (e.g. host_trap + stochastic): prefer host_trap first
-        # for determinism. Caller can pass --pcsamp directly to override.
+        # Prefer stochastic (has Stall_Reason); fall back to host_trap.
+        st = [m for m in matches if "stochastic" in m.name]
+        if st:
+            return st[0]
         ht = [m for m in matches if "host_trap" in m.name]
         return ht[0] if ht else matches[0]
     return matches[0]

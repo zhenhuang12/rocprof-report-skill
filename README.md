@@ -128,9 +128,12 @@ python3 "$SKILL/helpers/analyze_reports.py" \
 #   --rpc "$PROFILE_RUN_DIR/reports/rpc_v2" --tag v2
 # The script writes compare_v1_vs_v2.txt to <run-dir>/analysis/.
 
-# Per-line stall hotspots: --pcsamp-dir globs the rocprofv3 nested layout
-# (e.g. pmc_1/<host>/<pid>_pc_sampling_host_trap_v0.csv), so you don't have to
-# hardcode the exact filename. Use --pcsamp <file> only if you need a specific CSV.
+# Per-line stall hotspots: --pcsamp-dir globs the rocprofv3 FLAT layout
+# (pcsamp_<tag>/<pid>_pc_sampling_{stochastic,host_trap}.csv) and falls back
+# to the older nested form (pmc_1/<host>/...) automatically, so you don't have
+# to hardcode the exact filename. The helper prefers the stochastic CSV when
+# both are present — it's the only mode that populates `Stall_Reason`. Use
+# --pcsamp <file> only if you need a specific CSV.
 python3 "$SKILL/helpers/extract_stall_hotspots.py" \
     --run-dir "$PROFILE_RUN_DIR" \
     --pcsamp-dir "$PROFILE_RUN_DIR/reports/pcsamp_<tag>" --tag <tag>

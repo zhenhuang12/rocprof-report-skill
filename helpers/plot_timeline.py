@@ -47,9 +47,11 @@ except ImportError as e:  # pragma: no cover
 
 
 DEFAULT_COUNTERS = [
-    # Verified PMC counters on gfx942 / gfx950. Granular SQ_WAIT_INST_VMEM /
-    # WAIT_BARRIER are NOT PMCs on these gens — they come from PC sampling
-    # only. Use extract_stall_hotspots.py for that classification.
+    # Verified PMC counters on gfx942 / gfx950. Granular stall categories
+    # (arb_state_stall_vmem_tex / arb_state_stall_lds / etc.) are NOT PMCs on
+    # these gens — they come from STOCHASTIC PC sampling only (the host_trap
+    # mode does NOT populate Stall_Reason). Use extract_stall_hotspots.py for
+    # that classification.
     "SQ_WAVES",
     "SQ_BUSY_CYCLES",
     "SQ_WAIT_INST_ANY",

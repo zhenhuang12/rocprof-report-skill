@@ -32,7 +32,7 @@ For MI355X (gfx950), use `--offload-arch=gfx950` and ROCm 7+.
 |---|---|
 | `rocprof_utils.py` | Shared helpers: `load_rpc_dir`, `safe_col`, `key_counters_for_arch`, `dump_all_counters`, `MI300X_KEY_COUNTERS`, `MI355X_KEY_COUNTERS`, `per_kernel_durations_from_db`, ... |
 | `analyze_reports.py` | Extract key counters + side-by-side comparison from one or more rocprof-compute output dirs |
-| `extract_stall_hotspots.py` | Aggregate PC-sampling CSV (or ATT JSON) → per-source-line rankings by Wait_Reason (requires `-gline-tables-only`) |
+| `extract_stall_hotspots.py` | Aggregate PC-sampling CSV (stochastic preferred — has `Stall_Reason` + `arb_state_stall_*`; host_trap = hotspots only) or ATT JSON → per-source-line rankings (requires `-gline-tables-only` for `file:line` attribution) |
 | `plot_timeline.py` | ASCII plot rocprof-compute timeseries CSV / per-CU distribution (reveals tail effect, pipeline bubbles, workgroup imbalance) |
 | `list_flashinfer_workloads.py` | Browse a flashinfer-trace dataset: show axes, histogram workload shapes, print safetensors paths for specific UUIDs |
 
@@ -54,9 +54,11 @@ python3 $SKILL/helpers/analyze_reports.py --run-dir $PROFILE_RUN_DIR \
     --kernel "my_kernel_regex" --arch gfx942
 
 # Per-line stall hotspots from PC sampling — prefer --pcsamp-dir; it globs the
-# rocprofv3 nested layout (pcsamp_<tag>/pmc_1/<host>/<pid>_pc_sampling_*.csv)
-# so you don't have to know the host or PID. Use --pcsamp <file> only when you
-# need to pin a specific CSV.
+# rocprofv3 FLAT layout (pcsamp_<tag>/<pid>_pc_sampling_{stochastic,host_trap}.csv)
+# and falls back to the older nested form (pmc_1/<host>/...) automatically, so
+# you don't have to know the host or PID. Use --pcsamp <file> only when you
+# need to pin a specific CSV. The helper prefers the stochastic CSV when both
+# modes are present — it's the only mode that populates `Stall_Reason`.
 python3 $SKILL/helpers/extract_stall_hotspots.py --run-dir $PROFILE_RUN_DIR \
     --pcsamp-dir $PROFILE_RUN_DIR/reports/pcsamp_<tag1> --tag <tag1> \
     --pcsamp-dir $PROFILE_RUN_DIR/reports/pcsamp_<tag2> --tag <tag2>

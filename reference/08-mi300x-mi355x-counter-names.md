@@ -56,9 +56,11 @@ Scratch_Per_Workitem         # bytes = register spill volume per work-item
 Arch_VGPR                    # per-work-item architectural VGPR count (NOT "VGPRs")
 Accum_VGPR                   # per-work-item AGPR pool count on CDNA3+ (NOT "AGPRs")
 SGPR                         # per-wavefront SGPR (singular, NOT "SGPRs")
-Wave_Size                    # 64 on CDNA
-# NOTE: pmc_perf.csv does NOT include Start_Timestamp / End_Timestamp on rocprof-compute
-# in ROCm 7.x — use the kernel_trace.csv produced by `rocprofv3 --kernel-trace` for timing.
+# NOTE: pmc_perf.csv does NOT include a Wave_Size column on gfx942/gfx950 —
+# wave size is fixed at 64 on CDNA and reported in sysinfo.csv.
+# pmc_perf.csv also does NOT include Start_Timestamp / End_Timestamp on
+# rocprof-compute in ROCm 7.x — use the kernel_trace.csv produced by
+# `rocprofv3 --kernel-trace` for timing.
 ```
 
 ### Shader (SQ) — wave activity & instruction mix
@@ -99,13 +101,19 @@ SQ_WAIT_INST_LDS               # LDS instruction issue stall (covers bank-confli
 SQ_INST_LEVEL_LDS              # outstanding LDS level (peak concurrency)
 ```
 
-The granular VMEM / SMEM / FLAT / BARRIER / VMCNT / LGKMCNT / EXPCNT / MISC categories
+The granular VALU / matrix / LDS / scalar / vmem_tex / flat / exp / misc categories
 seen in older gfx9 docs are **NOT exposed as PMC counters** on gfx942 / gfx950 — that
-classification comes ONLY from PC sampling's `Wait_Reason` enum
-(rocprofv3 `--pc-sampling-method host_trap` / `stochastic`).
+classification comes ONLY from PC sampling's **stochastic** mode (the `Stall_Reason`
+column and the per-category `arb_state_stall_*` counters in
+`<pid>_pc_sampling_stochastic.csv`). The `host_trap` mode does NOT populate `Stall_Reason`
+— it only emits sampled PCs (per-line hotspots). The authoritative enum is
+`ROCPROFILER_PC_SAMPLING_INSTRUCTION_NOT_ISSUED_REASON_*` in
+`/opt/rocm/include/rocprofiler-sdk/pc_sampling.h`. See
+https://rocm.docs.amd.com/projects/rocprofiler-sdk/en/latest/how-to/using-pc-sampling.html
 
 Use rocprof-compute's derived stall totals (see the wavefront-stall breakdown in the
-per-block dump) and the PC-sampling `Wait_Reason` aggregation for the categorical split.
+per-block dump) and the stochastic-PC-sampling `Stall_Reason` / `arb_state_stall_*`
+aggregation for the categorical split.
 
 ### IPC / occupancy
 ```
@@ -285,28 +293,36 @@ not how current rocprof-compute is invoked — use the integer `-b` flag.
 
 For users coming from NCU, the wait/stall taxonomy maps roughly as:
 
-> **AMD-side note:** the granular `WAIT_*` categories below come from **PC sampling's
-> `Wait_Reason` enum** on gfx942 / gfx950 — they are NOT PMC counters (only
-> `SQ_WAIT_ANY`, `SQ_WAIT_INST_ANY`, `SQ_WAIT_INST_LDS` exist as PMCs).
+> **AMD-side note:** the granular `arb_state_stall_*` categories below come from **stochastic
+> PC sampling's `Stall_Reason` column** (and the matching per-category `arb_state_stall_*`
+> counters) on gfx942 / gfx950 — they are NOT PMC counters (only
+> `SQ_WAIT_ANY`, `SQ_WAIT_INST_ANY`, `SQ_WAIT_INST_LDS` exist as PMCs). The `host_trap`
+> PC-sampling mode does NOT populate `Stall_Reason`; use stochastic for the breakdown.
+> Authoritative enum: `ROCPROFILER_PC_SAMPLING_INSTRUCTION_NOT_ISSUED_REASON_*` in
+> `/opt/rocm/include/rocprofiler-sdk/pc_sampling.h`. See
+> https://rocm.docs.amd.com/projects/rocprofiler-sdk/en/latest/how-to/using-pc-sampling.html
 
-| NVIDIA (NCU) `smsp__average_warps_issue_stalled_<X>` | AMD (PC-sampling `Wait_Reason` or PMC where noted) | Notes |
+| NVIDIA (NCU) `smsp__average_warps_issue_stalled_<X>` | AMD (stochastic PC-sampling category or PMC where noted) | Notes |
 |---|---|---|
-| `long_scoreboard` | `WAIT_INST_VMEM` / `WAIT_VMCNT` (PC sampling) | Global / texture memory load waits |
-| `short_scoreboard` | `WAIT_INST_LDS` (PC sampling) or PMC `SQ_WAIT_INST_LDS`; `WAIT_LGKMCNT` | Shared-mem / constant / scalar memory waits |
-| `barrier` | `WAIT_BARRIER` (PC sampling) | `__syncthreads` / `s_barrier` |
-| `math_pipe_throttle` | (no direct signal — derive from `SQ_INSTS_VALU / SQ_BUSY_CYCLES` ratio) | VALU pipe contention |
-| `mio_throttle` | LSU pressure (TCP saturated; back-pressure visible in `TCP_PENDING_STALL_CYCLES_sum`) | MIO unit is NV-specific |
+| `long_scoreboard` | `arb_state_stall_vmem_tex` (stochastic) — scoreboard drains via PMC `SQ_WAIT_ANY` / `SQ_WAIT_INST_ANY` | Global / texture memory load waits |
+| `short_scoreboard` | `arb_state_stall_lds` (stochastic) or PMC `SQ_WAIT_INST_LDS`; `arb_state_stall_scalar` for scalar/constant | Shared-mem / constant / scalar memory waits |
+| `barrier` | no dedicated `arb_state_*` — diagnose via PMC `SQ_WAIT_ANY` + PC-sampling source-line correlation on `s_barrier` | `__syncthreads` / `s_barrier` |
+| `math_pipe_throttle` | `arb_state_stall_valu` (stochastic) | VALU pipe contention |
+| `mio_throttle` | `arb_state_stall_lds` (LDS pressure); LSU back-pressure visible in `TCP_PENDING_STALL_CYCLES_sum` | MIO unit is NV-specific |
 | `lg_throttle` | TCP saturation (back-pressure visible in `TCP_PENDING_STALL_CYCLES_sum`) | "load/global throttle" |
 | `tex_throttle` | TA/TD pressure — `TA_BUSY_*` saturated | Texture pipe in NV terms; image pipe on AMD |
-| `wait` | `OTHER` (PC sampling) | Misc fixed-latency waits |
-| `membar` | `WAIT_VMCNT` after a fence (PC sampling) | AMD uses explicit vmcnt/lgkmcnt drains |
-| `dispatch_stall` | `OTHER` (PC sampling, proxy) | Issue-slot blocked |
-| `drain` | `WAIT_VMCNT` / `WAIT_LGKMCNT` at kernel end (PC sampling) | Outstanding ops drain |
-| `no_instruction` | `NO_INST` (PC sampling); I-cache miss — `SQC_*` counters | Scalar/instr cache miss |
-| `branch_resolving` | `SQ_INSTS_BRANCH` + scalar branch wait | Conditional branch resolution |
-| `selected` (productive) | `ISSUED` (PC sampling); `SQ_INSTS_VALU` / `SQ_INSTS_VMEM_*` | Actually issuing |
+| `wait` | `arb_state_stall_misc` (stochastic) | Misc fixed-latency waits |
+| `membar` | scoreboard drain — diagnose via PMC `SQ_WAIT_ANY` / `SQ_WAIT_INST_ANY` after a fence | AMD uses explicit vmcnt/lgkmcnt drains |
+| `dispatch_stall` | `arb_state_stall_misc` (stochastic, proxy) | Issue-slot blocked |
+| `drain` | scoreboard drain at kernel end — PMC `SQ_WAIT_ANY` / `SQ_WAIT_INST_ANY` / `SQ_WAIT_INST_LDS` | Outstanding ops drain |
+| `no_instruction` | rows with `Wave_Issued_Instruction == 0` and no `arb_state_stall_*` bucket — corroborate with I-cache miss PMCs (`SQC_*`) | Scalar/instr cache miss |
+| `branch_resolving` | `arb_state_stall_brmsg` (stochastic) + `SQ_INSTS_BRANCH` | Conditional branch / message resolution |
+| `selected` (productive) | `arb_state_issue_*` rows / `Wave_Issued_Instruction == 1`; `SQ_INSTS_VALU` / `SQ_INSTS_VMEM_*` | Actually issuing |
+| (matrix-pipe dep on MFMA path) | `arb_state_stall_matrix` (stochastic) | MFMA pipe busy / AGPR dep |
+| (flat-addressing waits) | `arb_state_stall_flat` (stochastic) | FLAT-addressing op in flight |
+| (export-count drain) | `arb_state_stall_exp` (stochastic) — uncommon on compute | Export-count drain |
 
-This is approximate — AMD and NVIDIA model the front-end stall categories differently. Use it as a sanity check, not a 1:1 translation.
+This is approximate — AMD and NVIDIA model the front-end stall categories differently. Use it as a sanity check, not a 1:1 translation. Verify exact column names against the stochastic CSV produced by your install.
 
 ---
 

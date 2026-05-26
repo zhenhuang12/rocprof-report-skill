@@ -373,45 +373,102 @@ def dump_key_counters(rpc, arch, outpath_json, outpath_txt=None):
 def load_pcsamp_csv(csv_path):
     """Load a PC-sampling CSV emitted by `rocprofv3 --pc-sampling-method ...`.
 
-    Columns typically include:
-        Dispatch_ID, Sample_Time_ns, Instruction_Address,
-        Source (file:line; blank without -gline-tables-only),
-        Instruction_Comment (ISA mnemonic), Wait_Reason, Sample_Count
+    The two PC-sampling modes produce different schemas:
+
+      stochastic (`<pid>_pc_sampling_stochastic.csv`):
+        Sample_Timestamp, Exec_Mask, Dispatch_Id, Instruction (PC),
+        Instruction_Comment (ISA mnemonic), Correlation_Id,
+        Wave_Issued_Instruction (0 = stalled, 1 = issued), Instruction_Type,
+        Stall_Reason (populated only when Wave_Issued_Instruction == 0),
+        Wave_Count, arb_state_stall_<cat>, arb_state_issue_<cat>, ...
+
+      host_trap (`<pid>_pc_sampling_host_trap.csv`):
+        Sample_Timestamp, Exec_Mask, Dispatch_Id, Instruction,
+        Instruction_Comment, Correlation_Id
+        (NO Stall_Reason; per-line hotspots only.)
+
+    See https://rocm.docs.amd.com/projects/rocprofiler-sdk/en/latest/how-to/using-pc-sampling.html
     """
     return pd.read_csv(csv_path)
 
 
-def stall_hotspots(pcs_df, top=30, wait_reason=None):
-    """Aggregate PC samples by (Source, Wait_Reason). Returns DataFrame."""
+def _stall_col(df):
+    """Return the name of the stall-reason column in df, or None.
+
+    Stochastic-mode CSVs have `Stall_Reason`; host_trap CSVs don't.
+    """
+    return "Stall_Reason" if "Stall_Reason" in df.columns else None
+
+
+def _group_col(df):
+    """Return the per-PC grouping column (`Source` for file:line, else PC)."""
+    if "Source" in df.columns:
+        return "Source"
+    return "Instruction" if "Instruction" in df.columns else None
+
+
+def _sample_count_col(df):
+    """Return the sample-weight column name if present (else None = use row counts)."""
+    return "Sample_Count" if "Sample_Count" in df.columns else None
+
+
+def stall_hotspots(pcs_df, top=30, stall_reason=None, *, wait_reason=None):
+    """Aggregate PC samples by (Source-or-PC, Stall_Reason). Returns DataFrame.
+
+    `wait_reason` is a deprecated alias for `stall_reason` (the real CSV column
+    is `Stall_Reason`, not `Wait_Reason`). On a host_trap CSV (no Stall_Reason),
+    the grouping degrades to per-source-line counts only.
+    """
+    if wait_reason is not None and stall_reason is None:
+        stall_reason = wait_reason
     df = pcs_df
-    if wait_reason is not None:
-        df = df[df["Wait_Reason"] == wait_reason]
+    stall_col = _stall_col(df)
+    grp = _group_col(df)
+    cnt = _sample_count_col(df)
+    if grp is None:
+        return df.iloc[0:0]
+    if stall_reason is not None and stall_col is not None:
+        df = df[df[stall_col] == stall_reason]
     if df.empty:
         return df
-    agg = (
-        df.groupby(["Source", "Wait_Reason"])["Sample_Count"]
-        .sum()
-        .sort_values(ascending=False)
-        .head(top)
-    )
-    total = float(pcs_df["Sample_Count"].sum())
+
+    group_keys = [grp, stall_col] if stall_col is not None else [grp]
+    if cnt is not None:
+        agg = df.groupby(group_keys)[cnt].sum().sort_values(ascending=False).head(top)
+        total = float(pcs_df[cnt].sum())
+    else:
+        agg = df.groupby(group_keys).size().sort_values(ascending=False).head(top)
+        total = float(len(pcs_df))
     return agg.to_frame("samples").assign(
         pct=lambda d: d["samples"] / total * 100 if total else 0.0
     )
 
 
 def stall_hotspots_per_line(pcs_df, top=30):
-    """Per-source-line breakdown across all wait reasons. Returns DataFrame
-    with columns: total samples + one column per wait reason."""
+    """Per-source-line breakdown across all stall reasons. Returns DataFrame
+    with columns: total samples + one column per stall reason. On a host_trap
+    CSV (no `Stall_Reason`) it returns a single-column per-line total."""
     if pcs_df.empty:
         return pcs_df
-    pivot = (
-        pcs_df.groupby(["Source", "Wait_Reason"])["Sample_Count"]
-        .sum()
-        .unstack(fill_value=0)
-    )
-    pivot["__total__"] = pivot.sum(axis=1)
-    return pivot.sort_values("__total__", ascending=False).head(top)
+    stall_col = _stall_col(pcs_df)
+    grp = _group_col(pcs_df)
+    cnt = _sample_count_col(pcs_df)
+    if grp is None:
+        return pcs_df.iloc[0:0]
+    if stall_col is not None:
+        if cnt is not None:
+            pivot = pcs_df.groupby([grp, stall_col])[cnt].sum().unstack(fill_value=0)
+        else:
+            pivot = pcs_df.groupby([grp, stall_col]).size().unstack(fill_value=0)
+        pivot["__total__"] = pivot.sum(axis=1)
+        return pivot.sort_values("__total__", ascending=False).head(top)
+    # host_trap: no stall reason; return per-line totals only.
+    if cnt is not None:
+        agg = pcs_df.groupby(grp)[cnt].sum()
+    else:
+        agg = pcs_df.groupby(grp).size()
+    agg = agg.sort_values(ascending=False).head(top).to_frame("__total__")
+    return agg
 
 
 # --- rocpd / .db helpers ----------------------------------------------------

@@ -75,6 +75,8 @@ If you want the `rocpd` query helper or the rocprof-analyze utility:
 python3 -c "import rocpd; print(rocpd.__file__)"   # ships with ROCprofiler-SDK in ROCm 7+
 ```
 
+If `import rocpd` raises `ModuleNotFoundError` even on ROCm 7+, see [`09-common-issues.md`](09-common-issues.md) — typically the system Python doesn't see `/opt/rocm/lib/python3.*/site-packages`.
+
 ---
 
 ## Phase 2 — Build a profile target
@@ -168,8 +170,10 @@ python3 "$SKILL/helpers/analyze_reports.py" --run-dir "$PROFILE_RUN_DIR" \
     --rpc "$PROFILE_RUN_DIR/reports/rpc_<tag>" --tag <tag> \
     --kernel "YOUR_KERNEL_SUBSTRING" --arch gfx942   # or gfx950 for MI355X
 
-# Per-source-line stall hotspots — --pcsamp-dir globs the nested rocprofv3
-# layout (pcsamp_<tag>/pmc_1/<host>/<pid>_pc_sampling_*.csv)
+# Per-source-line stall hotspots — --pcsamp-dir globs the flat rocprofv3
+# layout (pcsamp_<tag>/<pid>_pc_sampling_{stochastic,host_trap}.csv).
+# Prefer stochastic CSV: it has `Stall_Reason` + `arb_state_stall_*` columns
+# for a true wait-reason breakdown. host_trap only gives sampled PCs (hotspots).
 python3 "$SKILL/helpers/extract_stall_hotspots.py" --run-dir "$PROFILE_RUN_DIR" \
     --pcsamp-dir "$PROFILE_RUN_DIR/reports/pcsamp_<tag>" --tag <tag>
 
@@ -192,7 +196,7 @@ Work through the six analysis dimensions — see [`05-analysis-dimensions.md`](0
 
 1. **CU occupancy & wave structure** — are enough workgroups launched to fill the chip (304 CUs = 8 XCDs × 38 CUs over 4 IODs on MI300X; 256 CUs = 8 XCDs × 32 CUs over 2 IODs on MI355X)? Is occupancy register- / LDS- / workgroup-limited?
 2. **Workgroup balance (tail effect)** — do per-CU / per-XCD active cycles match? Does the PMC timeline show a clean drop or a gradual tail?
-3. **Instruction-level stall analysis** — what wait reason dominates? On gfx942 / gfx950 the only PMC wait counters are `SQ_WAIT_ANY`, `SQ_WAIT_INST_ANY`, and `SQ_WAIT_INST_LDS`; the granular VMEM / SMEM / FLAT / BARRIER / VMCNT / LGKMCNT breakdown lives in the PC-sampling `Wait_Reason` enum (`rocprofv3 --pc-sampling-method host_trap --pc-sampling-unit time`). Which source line generates it?
+3. **Instruction-level stall analysis** — what wait reason dominates? On gfx942 / gfx950 the only PMC wait counters are `SQ_WAIT_ANY`, `SQ_WAIT_INST_ANY`, and `SQ_WAIT_INST_LDS`; the granular `arb_state_stall_{valu, matrix, lds, scalar, vmem_tex, flat, exp, misc, brmsg}` breakdown lives in the **stochastic** PC-sampling CSV's `Stall_Reason` column (`rocprofv3 --pc-sampling-method stochastic --pc-sampling-unit cycles`). The `host_trap` mode does NOT populate `Stall_Reason` — use it for per-line hotspots only. Which source line generates it?
 4. **Matrix-Core utilization** — if this is a GEMM-ish kernel, are MFMA instructions actually being issued (`SQ_INSTS_VALU_MFMA_MOPS_<dtype>` / `SQ_VALU_MFMA_BUSY_CYCLES`)?
 5. **CU utilization timeline** — flat high, flat low, periodic waves, gradual tail?
 6. **Memory access pattern** — bytes/wavefront, vL1/L2 hit rates, HBM throughput, LDS bank conflicts, register/scratch spill.
@@ -222,5 +226,5 @@ Keep the report short enough that a busy reader can see the top 3 findings in 30
 - ❌ **"I ran rocprof and it says memory throughput is 14%"** — without naming the counter, workload, and kernel, this is un-actionable. Always give counter + value + what it means.
 - ❌ **Profiling with synthetic shapes that don't match real workloads.** A uniform-element batch is a very different problem than a batch with highly skewed per-element work (the latter exposes tail effects the former hides). If the production workload has imbalance, you must profile on an imbalanced workload.
 - ❌ **Dumping the full rocprof-compute CLI output into the report.** It's noisy, narrow-formatted, and has no interpretation. Extract the numbers, cite the source, add your reading.
-- ❌ **Proposing optimizations without evidence.** "Maybe we should use LDS" is not a profiling result. A real proposal cites a specific source line, its stall-sample count, the relevant section's peak-gap, and the mechanism of the fix — e.g. "line L's global-load instruction accounts for N% of PC samples with `Wait_Reason = WAIT_INST_VMEM` (collected via `--pc-sampling-method host_trap`); rocprof-compute reports the per-wave global-load is M bytes (only K% of the peak 1024 B for `global_load_dwordx4`); rewriting the per-thread index from stride-K to contiguous + using `global_load_lds_dwordx4` should eliminate most of those stalls."
+- ❌ **Proposing optimizations without evidence.** "Maybe we should use LDS" is not a profiling result. A real proposal cites a specific source line, its stall-sample count, the relevant section's peak-gap, and the mechanism of the fix — e.g. "line L's global-load instruction accounts for N% of stochastic PC samples with `Stall_Reason = arb_state_stall_vmem_tex` (collected via `--pc-sampling-method stochastic`); rocprof-compute reports the per-wave global-load is M bytes (only K% of the peak 1024 B for `global_load_dwordx4`); rewriting the per-thread index from stride-K to contiguous + using `global_load_lds_dwordx4` should eliminate most of those stalls."
 - ❌ **Missing the #1 finding because you got distracted by a smaller one.** Rank findings by impact. Tail effects (especially across XCDs on MI300X SPX/NPS1) and CU idle time often dwarf coalescing issues; fix the big one first.
