@@ -50,7 +50,7 @@ Theoretical_Occupancy     # rocprof-compute wavefront block (`-b 5`)
 - **Waves per CU > 4**: grid is plenty big, scheduling averages out.
 - **Theoretical occupancy 100% but achieved << 100%**: stalls are the bottleneck, not launch config. Move to Dimension 3.
 - **Theoretical occupancy < 100% and VGPR (or AGPR) is the tightest limiter**: reduce register usage or add `__launch_bounds__`.
-- **LDS** the tightest: workgroup LDS budget too large; reduce tile size or split. MI355X keeps the same **64 KB LDS/CU** as MI300X, so don't expect extra headroom on CDNA4 — shrinking the tile or splitting the workgroup is still the fix.
+- **LDS** the tightest: workgroup LDS budget too large; reduce tile size or split. LDS budget is **64 KB/CU on MI300X** and **160 KB/CU on MI355X** (CDNA4 enlarged LDS 2.5× with 2× read BW) — so on MI355X you genuinely have room for bigger tiles before LDS becomes the occupancy limiter; on MI300X, shrinking/splitting is still the fix.
 
 **Derived: wave math**
 
@@ -136,7 +136,7 @@ avg = sum(work_per_wkg) / len(work_per_wkg)
 print(f"max/avg = {max(work_per_wkg)/avg:.2f}x, max/min = {max(work_per_wkg)/min(work_per_wkg):.2f}x")
 ```
 
-Ratios > 5x indicate significant potential for tail effect.
+Ratios > 3x indicate potential tail effect — investigate (see Pattern B in [`06-diagnosis-playbook.md`](06-diagnosis-playbook.md), which uses the same `max/avg > 3` action threshold).
 
 ---
 
@@ -230,9 +230,11 @@ Reminder: of these, only `WAIT_INST_LDS` is also a PMC (`SQ_WAIT_INST_LDS`). The
 **Counters (rocprof-compute compute-pipe block, `-b 10`, formerly §2.1.10):**
 
 > MFMA per-dtype counters are named `SQ_INSTS_VALU_MFMA_MOPS_<DTYPE>` on gfx942 / gfx950
-> ("MOPS" = matrix-ops). The exact set of `<DTYPE>` suffixes (F16, BF16, F32, F64, I8, F8,
-> MXFP4/MXFP6 etc.) varies by ROCm version — list what your install exposes with
-> `rocprofv3 -L | grep MFMA`. The aggregate `SQ_INSTS_MFMA` is always available.
+> ("MOPS" = matrix-ops). The canonical `<DTYPE>` set is `F16, BF16, F32, F64, I8, F8, BF8, XF32`
+> on **both** gfx942 and gfx950; gfx950 adds `F6F4` (covers MXFP4/MXFP6 traffic — there is no
+> separate MXFP4 or MXFP6 PMC suffix). See [`reference/08-mi300x-mi355x-counter-names.md`](08-mi300x-mi355x-counter-names.md)
+> for the authoritative list. Always verify against `rocprofv3 -L | grep MFMA` on your install.
+> The aggregate `SQ_INSTS_MFMA` is always available.
 
 ```
 SQ_INSTS_MFMA                          # total MFMA instruction count
@@ -257,7 +259,7 @@ GRBM_GUI_ACTIVE                        # for normalizing to total time
 
 **MI300X (CDNA3 / gfx942) MFMA notes:**
 
-- Supported shapes for F32/F16/BF16: `mfma_*_{4x4x4, 16x16x4, 16x16x16, 32x32x4, 32x32x8}`. **I8 uses larger K**: `v_mfma_i32_{16x16x32, 32x32x16}i8` (K doubled, since INT8 packs 4 bytes per 32-bit register; note the dtype glues to the tile shape with no underscore). FP8 variants via OCP-FNUZ; FP64 added.
+- Supported shapes for F32/F16/BF16: `mfma_*_{4x4x4, 16x16x4, 16x16x16, 32x32x4, 32x32x8}`. **I8 uses larger K**: `v_mfma_i32_{16x16x32, 32x32x16}i8` (K doubled, since INT8 packs 4 bytes per 32-bit register; note legacy I8/F16/BF16/F64 dtype suffixes glue to the tile shape with no underscore, while FP8/BF8/F8F6F4/XF32 forms use an underscore separator — e.g. `v_mfma_f32_16x16x32_fp8_fp8`). FP8 variants via OCP-FNUZ; FP64 added.
 - Accumulators live in **AGPR** (not VGPR). When `Scratch_Per_Workitem > 0` *and* MFMA-heavy, suspect over-allocation of AGPR forcing spill.
 - Use `v_mfma_f32_32x32x8bf16_1k` (or `v_mfma_f32_16x16x16bf16_1k`) over the older 16x16x4 — same throughput per cycle but better register reuse. The `_1k` suffix is the AMD-canonical name in the LLVM/AMDGPU back-end for the 1-block form.
 
@@ -359,7 +361,7 @@ SQ_INSTS_FLAT                                    # FLAT addressing path
 - **vL1 hit rate > 90%**: good data locality, vL1 is absorbing the reuse.
 - **L2 hit rate < 50%**: L2 is being blown through (or the kernel is reading something it never reuses), reads fall to HBM.
 - **Bytes per wavefront (rocprof-compute reports this in `-b 11` "Instruction Mix" / `-b 15` "L1D Cache")**: peak is opcode-dependent — 256 B for `global_load_dword` (4 B/lane × 64 lanes), 512 B for `global_load_dwordx2`, 1024 B for `global_load_dwordx4` (16 B/lane × 64 lanes). Substantially less than the opcode peak means under-vectorization, gather/scatter, or stride > 1 access; values above the peak indicate uncoalesced gathers.
-- **`SQ_LDS_BANK_CONFLICT > 0`**: bank conflicts. The 32-bank LDS serializes same-bank accesses. Pad tile dims or swizzle indices. LDS budget is 64 KB/CU on both MI300X and MI355X, so the padding-cost / occupancy trade is the same on both gens.
+- **`SQ_LDS_BANK_CONFLICT > 0`**: bank conflicts. The 32-bank LDS serializes same-bank accesses. Pad tile dims or swizzle indices. LDS budget is **64 KB/CU on MI300X** and **160 KB/CU on MI355X** (CDNA4 enlarged LDS 2.5× with 2× read BW) — on MI355X the padding-cost / occupancy trade is much cheaper since you have headroom for the +1-dword padding plus a bigger tile.
 - **`Scratch_Per_Workitem > 0` (from launch info) or rocprof-compute SoL "Scratch" non-zero**: **register spill** — very bad, scratch is HBM-backed. Reduce VGPR/AGPR pressure with `__launch_bounds__` or kernel splitting.
 - **`SQ_INSTS_LDS == 0`**: kernel uses no LDS. Fine for element-wise kernels; often a missed optimization for data-reuse-heavy kernels.
 

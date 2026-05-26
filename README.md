@@ -147,9 +147,13 @@ python3 "$SKILL/helpers/plot_timeline.py" \
 
 # … or from a rocprof-compute timeseries CSV (collect with
 # `rocprof-compute profile --timeseries-sampling-rate 1ms ...`)
+# NOTE: plot_timeline.py writes a single `analysis/timeline_plots.txt` per
+# invocation and OVERWRITES on each call. To compare multiple tags, pass
+# `--timeseries ... --tag ...` pairs in one invocation (both args repeat).
 python3 "$SKILL/helpers/plot_timeline.py" \
     --run-dir "$PROFILE_RUN_DIR" \
-    --timeseries "$PROFILE_RUN_DIR/reports/rpc_ts_<tag>/pmc_perf_timeseries.csv" --tag <tag>
+    --timeseries "$PROFILE_RUN_DIR/reports/rpc_ts_<tag1>/pmc_perf_timeseries.csv" --tag <tag1> \
+    --timeseries "$PROFILE_RUN_DIR/reports/rpc_ts_<tag2>/pmc_perf_timeseries.csv" --tag <tag2>
 
 # Browse a flashinfer-trace dataset to pick workload shapes
 export FIB_DATASET_PATH=/path/to/flashinfer-trace

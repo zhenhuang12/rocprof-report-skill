@@ -234,7 +234,7 @@ Always check both SoL gaps:
 
 Achieved occupancy < theoretical means waves can't all be resident — usually VGPR/AGPR or LDS pressure. Check the wavefront-launch block (`-b 7` in `rocprof-compute analyze`):
 - High `Arch_VGPR` (>128/work-item) → register pressure
-- High `LDS_Per_Workgroup` relative to CU LDS budget (**64 KB/CU on BOTH gfx942 and gfx950** — CDNA4 did not enlarge it) → LDS pressure limits resident workgroups
+- High `LDS_Per_Workgroup` relative to CU LDS budget (**64 KB/CU on gfx942 (MI300X); 160 KB/CU on gfx950 (MI355X)** — CDNA4 enlarged LDS 2.5× and doubled read BW to 256 B/cycle) → LDS pressure limits resident workgroups
 - Non-zero `Scratch_Per_Workitem` → spill (kills perf)
 - High `Accum_VGPR` (AGPR pool, CDNA3+) on MFMA-heavy kernels → MFMA accumulator pressure
 

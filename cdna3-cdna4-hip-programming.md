@@ -20,12 +20,12 @@ If you are coming from NVIDIA, the most important mental adjustments are:
 
 | Property | MI300X | MI300A |
 |---|---|---|
-| Compute Units | 304 (8 XCDs × 38 CUs) | 228 (6 XCDs × 38 CUs) + 24 Zen4 cores |
+| Compute Units | 304 (8 XCDs × 38 CUs, organized over 4 IODs) | 228 (6 XCDs × 38 CUs) + 24 Zen4 cores |
 | SIMDs per CU | 4 | 4 |
 | Wave size | 64 | 64 |
 | VGPR per SIMD | 256 × 32-bit | 256 |
 | AGPR per SIMD | 256 × 32-bit (separately addressable, used by MFMA) | 256 |
-| LDS per CU | 64 KB (32 banks × 4 B) | 64 KB |
+| LDS per CU | 64 KB (32 banks × 4 B; 128 B/cycle peak read BW) | 64 KB |
 | Vector L1 (TCP) | per-CU, 32 KB | per-CU, 32 KB |
 | L2 (TCC) | per-XCD, 4 MB | per-XCD, 4 MB |
 | **Infinity Cache (MALL)** | **256 MB shared across XCDs** | shared with CPU |
@@ -48,7 +48,7 @@ If you are coming from NVIDIA, the most important mental adjustments are:
 | SIMDs per CU | 4 |
 | Wave size | 64 |
 | VGPR / AGPR per SIMD | 256 each (pool more flexibly partitionable than CDNA3) |
-| LDS per CU | 64 KB (unchanged from CDNA3) |
+| LDS per CU | **160 KB** (2.5× larger than CDNA3's 64 KB; doubled read BW to 256 B/cycle) |
 | Vector L1 (TCP) | per-CU, 32 KB (same as CDNA3 gfx942) |
 | L2 (TCC) | per-XCD, 4 MB |
 | **Infinity Cache** | **256 MB retained** (coupled to HBM3E in CDNA4) |
@@ -216,7 +216,7 @@ Always confirm the exact mnemonic against `llvm-mc -mcpu=gfx950 -show-encoding` 
 
 ## LDS (Local Data Share) — the AMD shared memory
 
-LDS is per-CU, 32 banks of 4 bytes each (so 128 bytes per cycle peak), 64 KB per CU on both CDNA3 (gfx942) and CDNA4 (gfx950).
+LDS is per-CU, 32 banks of 4 bytes each. CDNA3 (gfx942) has **64 KB per CU** with **128 B/cycle** peak read bandwidth. CDNA4 (gfx950) bumps this to **160 KB per CU** (2.5× larger) with **256 B/cycle** peak read bandwidth (2×) — wired specifically to feed the wider MFMA tile rates.
 
 ### Bank conflicts
 

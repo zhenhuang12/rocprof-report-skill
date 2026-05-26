@@ -213,7 +213,7 @@ If `K < 16`: consider batching multiple iterations' results into a vectorized wr
 - `WAIT_INST_LDS` waits concentrated on LDS load lines.
 - Access pattern has regular strides that align to bank boundaries.
 
-**Why:** LDS has 32 banks (4 B each on gfx9 — both CDNA3 and CDNA4 keep this layout); same-bank accesses serialize. LDS size per CU is **64 KB on both MI300X and MI355X** — CDNA4 did not enlarge it.
+**Why:** LDS has 32 banks (4 B each on gfx9 — both CDNA3 and CDNA4 keep this layout); same-bank accesses serialize. LDS size per CU is **64 KB on MI300X** and **160 KB on MI355X** (CDNA4 enlarged LDS 2.5× and doubled read BW to 256 B/cycle — extra capacity helps fit bigger MFMA tiles, but the bank-conflict avoidance discipline is unchanged).
 
 **First-line fix:** padding. `__shared__ float tile[64][33]` instead of `[64][32]` breaks regular bank alignment. If your LDS budget allows it, padding is a one-line win.
 
@@ -318,7 +318,7 @@ If `K < 16`: consider batching multiple iterations' results into a vectorized wr
 
 **Deeper fixes:**
 - Multi-stage pipeline (3-4 stages possible with CDNA3 256+256 register budget). Use `global_load_lds` plus an explicit ring buffer of LDS tiles.
-- On CDNA4, LDS remains 64 KB/CU; deeper pipelines have to come from the wider `global_load_lds` variants and the more flexible VGPR/AGPR repartitioning, not from extra LDS.
+- On CDNA4, LDS grows to **160 KB/CU** (2.5× CDNA3) with 256 B/cycle read BW — you have real room for deeper ring buffers (e.g. 3–4 stages on a 128 KB tile pair leaves headroom for metadata). Combine with the wider `global_load_lds` variants and the more flexible VGPR/AGPR repartitioning.
 
 **Cross-ref:** CDNA principle 15.
 
