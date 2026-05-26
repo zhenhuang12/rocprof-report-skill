@@ -134,6 +134,10 @@ Use `extract_stall_hotspots.py` to aggregate these by `(file, line)` and by wait
 Heavier — captures every wave's instruction stream on the targeted CU(s). Default capture is **1 kernel × 1 CU per SE**, so plan accordingly.
 
 ```bash
+# --att-target-cu 0 picks the CU at index 0 within each enabled SE. There is
+# no special meaning to either 0 or the default of 1 — both are just CU
+# indices. The examples in this skill use 0 throughout for reproducibility;
+# omit the flag to fall back to the rocprofv3 default (1).
 rocprofv3 --att \
     --att-target-cu 0 \
     --att-buffer-size 0x10000000 \
@@ -146,7 +150,7 @@ rocprofv3 --att \
 | Flag | Meaning |
 |---|---|
 | `--att` | Enable Advanced Thread Trace. |
-| `--att-target-cu N` | Capture this CU index (within each enabled SE). **Default is `1`, not 0.** `--att-target-cu 0` is a valid single-CU choice (CU 0). To cover more CUs, run multiple invocations or script around it. |
+| `--att-target-cu N` | Capture this CU index (within each enabled SE). Default is `1`; `0` is equally valid. Both are plain indices — there's no special-case meaning. To cover more CUs, run multiple invocations or script around it. |
 | `--att-shader-engine-mask` | Bitmask of SEs to enable. `0xF` = first 4 SEs. |
 | `--att-buffer-size` | Per-SE trace buffer in bytes. Bump if traces are getting truncated. |
 
@@ -214,13 +218,23 @@ rocprof-compute analyze \
 Or in Python (see `04-python-api.md`):
 
 ```python
-import os, pandas as pd
+import os
+from pathlib import Path
+import pandas as pd
 RUN = os.environ["PROFILE_RUN_DIR"]
 # rocprof-compute profile does NOT write timestamps.csv. Per-kernel wall-clock
 # duration comes from rocprofv3's kernel_trace.csv (run a separate
-# `rocprofv3 --kernel-trace -f csv -d <path>` to produce it).
-d1 = pd.read_csv(f"{RUN}/reports/trace_v1/<host>/<pid>_kernel_trace.csv")
-d2 = pd.read_csv(f"{RUN}/reports/trace_v2/<host>/<pid>_kernel_trace.csv")
+# `rocprofv3 --kernel-trace -f csv -d <path>` to produce it). rocprofv3 nests
+# the CSV under <host>/<pid>/, so rglob the trace dir rather than guessing.
+def _load_trace(tag):
+    paths = sorted(Path(f"{RUN}/reports/trace_{tag}").rglob("*_kernel_trace.csv"))
+    if not paths:  # standalone `rocprofv3 --kernel-trace` form has no PID prefix
+        paths = sorted(Path(f"{RUN}/reports/trace_{tag}").rglob("kernel_trace.csv"))
+    if not paths:
+        raise FileNotFoundError(f"no kernel_trace.csv under {RUN}/reports/trace_{tag}")
+    return pd.concat([pd.read_csv(p) for p in paths], ignore_index=True)
+
+d1, d2 = _load_trace("v1"), _load_trace("v2")
 t1 = (d1["End_Timestamp"] - d1["Start_Timestamp"]).sum()
 t2 = (d2["End_Timestamp"] - d2["Start_Timestamp"]).sum()
 print(f"Speedup: {t1/t2:.2f}x")

@@ -50,10 +50,13 @@ python3 $HELPERS/analyze_reports.py --run-dir $PROFILE_RUN_DIR \
     --rpc $PROFILE_RUN_DIR/reports/rpc_<tag2> --tag <tag2> \
     --kernel "my_kernel_regex" --arch gfx942
 
-# Per-line stall hotspots from PC sampling
+# Per-line stall hotspots from PC sampling — prefer --pcsamp-dir; it globs the
+# rocprofv3 nested layout (pcsamp_<tag>/pmc_1/<host>/<pid>_pc_sampling_*.csv)
+# so you don't have to know the host or PID. Use --pcsamp <file> only when you
+# need to pin a specific CSV.
 python3 $HELPERS/extract_stall_hotspots.py --run-dir $PROFILE_RUN_DIR \
-    --pcsamp $PROFILE_RUN_DIR/reports/pcsamp_<tag1>/pc_sampling_host_trap_v0.csv --tag <tag1> \
-    --pcsamp $PROFILE_RUN_DIR/reports/pcsamp_<tag2>/pc_sampling_host_trap_v0.csv --tag <tag2>
+    --pcsamp-dir $PROFILE_RUN_DIR/reports/pcsamp_<tag1> --tag <tag1> \
+    --pcsamp-dir $PROFILE_RUN_DIR/reports/pcsamp_<tag2> --tag <tag2>
 
 # Or ATT-based hotspots
 python3 $HELPERS/extract_stall_hotspots.py --run-dir $PROFILE_RUN_DIR \

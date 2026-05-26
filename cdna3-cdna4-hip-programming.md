@@ -309,6 +309,8 @@ On gfx942 / gfx950, only **three** `SQ_WAIT_*` PMC counters exist as hardware co
 | `WAIT_BARRIER` | at `s_barrier` | Workgroup-wide sync — usually fundamental, but check if you can split barrier into halves |
 | `WAIT_VMCNT` | vmcnt > 0 | Drain outstanding vmem before continuing — usually from explicit `s_waitcnt vmcnt(0)` or mem ordering |
 | `WAIT_LGKMCNT` | lgkmcnt > 0 | Drain LDS/GDS/scalar/const before continuing |
+| `WAIT_EXPCNT` *(install-dependent)* | expcnt > 0 | Export-count drain — uncommon on compute kernels; mostly seen on graphics paths |
+| `WAIT_MISC` *(install-dependent)* | catch-all | Anything not in the above buckets — verify the exact enum set with `rocprofv3 -L` |
 
 Scratch (= register spill) traffic does **not** have a dedicated wait-reason — diagnose it via `Scratch_Per_Workitem > 0` in launch info plus rocprof-compute's scratch / spill block (`-b 18`). Always verify the exact wait-reason enum set on your install with `rocprofv3 -L`.
 

@@ -130,16 +130,26 @@ import matplotlib  # or use the ASCII plotter in helpers/plot_timeline.py
 For PC-sampling / ATT-style per-PC data (the AMD analog of NVIDIA's per-correlation-ID per-PC counts) you read **PC-sampling CSV** or **ATT JSON**:
 
 ```python
-# PC sampling — filename includes pid/timestamp/method, glob to find it.
+# PC sampling — rocprofv3 writes the CSV at a nested PID-prefixed path like
+# pcsamp_<tag>/pmc_1/<host>/<pid>_pc_sampling_host_trap_v0.csv. Glob both the
+# bare and PID-prefixed forms so this works regardless of how rocprofv3 was
+# invoked (standalone vs through rocprof-compute).
 import os, glob, pandas as pd
 RUN = os.environ["PROFILE_RUN_DIR"]
-csvs = glob.glob(f"{RUN}/reports/pcsamp_<tag>/**/pc_sampling_*.csv", recursive=True)
+csvs = sorted(set(
+    glob.glob(f"{RUN}/reports/pcsamp_<tag>/**/pc_sampling_*.csv", recursive=True) +
+    glob.glob(f"{RUN}/reports/pcsamp_<tag>/**/*_pc_sampling_*.csv", recursive=True)
+))
+if not csvs:
+    raise FileNotFoundError(f"no pc_sampling CSV under {RUN}/reports/pcsamp_<tag>")
 pcs = pd.concat([pd.read_csv(p) for p in csvs], ignore_index=True)
 # Columns: Dispatch_ID, Sample_Time_ns, Instruction_Address, Source, Instruction_Comment, Wait_Reason, Sample_Count, ...
 hot = (pcs.groupby(["Source", "Wait_Reason"])["Sample_Count"]
           .sum().sort_values(ascending=False).head(20))
 print(hot)
 ```
+
+For production use, prefer `helpers/extract_stall_hotspots.py --pcsamp-dir ...` — it handles both layouts and degrades cleanly on missing input.
 
 `Source` is `file:line` (populated only when compiled with `-gline-tables-only` / `-g`). `Instruction_Comment` is the ISA mnemonic (`global_load_dwordx4`, `v_mfma_f32_16x16x16_bf16`, `s_waitcnt`, …). `Wait_Reason` is one of the AMD wait categories — see the table in [`05-analysis-dimensions.md`](05-analysis-dimensions.md).
 

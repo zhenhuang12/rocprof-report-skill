@@ -85,10 +85,9 @@ profile/<run_name>/
 │   ├── att_<tag2>/
 │   ├── pcsamp_<tag1>/              ← rocprofv3 --pc-sampling output dir (CSV per kernel)
 │   └── pcsamp_<tag2>/
-└── analysis/
-    ├── analyze_reports.py          ← the script that produced the extractions
-    ├── extract_stall_hotspots.py
-    ├── plot_timeline.py
+└── analysis/                       ← only the OUTPUT artifacts live here;
+    │                                  invoke the helpers from $SKILL/helpers/
+    │                                  with --run-dir, do NOT copy them in.
     ├── metrics_all_<tag>.json      ← every parsed counter, full archive
     ├── metrics_key_<tag>.{txt,json}← curated key metrics
     ├── compare_<a>_vs_<b>.txt      ← side-by-side
@@ -102,7 +101,7 @@ Notes:
 
 - `<tag>` is the per-workload / per-dispatch-path label, e.g. `path_a_shapeA`, `path_b_shapeB`. Pick tags that are short and name the representative workload, not the file UUID.
 - If you profile only one tag, you can omit the tag suffix from filenames. But as soon as you profile a second, backfill the tag to avoid ambiguity.
-- Keep `analysis/analyze_reports.py` as a per-run copy (pointing at the run-local `reports/`), not a symlink into the repo. This way the run is self-contained and archivable.
+- **Do not copy the helper scripts per-run.** Invoke them from `$SKILL/helpers/` (where `$SKILL` points at the installed skill root) and pass `--run-dir $PROFILE_RUN_DIR`. The scripts are stateless w.r.t. the script path; only the data under `analysis/` is per-run. If you genuinely need an archival snapshot of the helper code, copy it once at promotion time, not on every run.
 - **rocprof-compute writes a partly flat directory.** The merged `pmc_perf.csv`, `pmc_kernel_top.csv`, `sysinfo.csv`, `roofline.pdf`, and `profiling_config.yaml` land directly under `<path>/`; the raw per-PMC-group CSVs land under `<path>/out/pmc_<N>/<hostname>/<pid>_*.csv`. When `-p <path>` is passed, this is rooted at `<path>/`; when omitted, output defaults to `./workloads/<name>/` (no `<gpu_model>` subdir on current rocprof-compute). Keep the whole tree — the helpers and the GUI walk it together.
 - **rocprofv3** in ROCm 7+ defaults to a SQLite `.db` (the `rocpd` schema) plus CSVs. In ROCm 6.x it defaulted to CSVs only. Keep whatever rocprofv3 produced — pandas + sqlite3 handle both.
 
@@ -190,10 +189,11 @@ rocprofv3 --att --att-target-cu 0 \
     -d "$PROFILE_RUN_DIR/reports/att_<tag>" \
     -- "$PROFILE_RUN_DIR/harness/kernel_harness" [args]
 
-# parse — --rpc and --tag are required, once per report dir
+# parse — --rpc and --tag are required, once per report dir.
+# --kernel-trace is optional; analyze_reports.py auto-resolves the rocprofv3
+# nested path (trace_<tag>/**/*_kernel_trace.csv) when omitted.
 python3 analyze_reports.py --run-dir "$PROFILE_RUN_DIR" \
     --rpc "$PROFILE_RUN_DIR/reports/rpc_<tag>" --tag <tag> \
-    --kernel-trace "$PROFILE_RUN_DIR/reports/trace_<tag>/kernel_trace.csv" \
     --kernel "my_kernel"
 ```
 

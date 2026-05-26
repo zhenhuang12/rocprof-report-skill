@@ -80,9 +80,10 @@ Minimal runnable command listing:
     │   │   ├── roofline.pdf                ← PDF when roofline ran (default-on; --no-roof to skip)
     │   │   ├── profiling_config.yaml
     │   │   └── out/pmc_<N>/<host>/<pid>_*.csv   ← raw per-PMC-group passes
-    │   ├── pcsamp_<tag>/                   ← PC sampling CSV (e.g. pc_sampling_host_trap_v0.csv)
+    │   ├── pcsamp_<tag>/                   ← rocprofv3 PC sampling output
+    │   │   └── pmc_1/<host>/<pid>_pc_sampling_host_trap_v0.csv   ← nested, glob to find
     │   └── att_<tag>/                      ← optional ATT (one JSON per SE/CU)
-    └── analysis/                           ← scripts + extracted metrics
+    └── analysis/                           ← extracted metrics (helpers run from $SKILL/helpers/)
         ├── details_<tag>.txt               ← `rocprof-compute analyze` dump
         ├── metrics_key_<tag>.json
         └── compare_<tag1>_vs_<tag2>.txt

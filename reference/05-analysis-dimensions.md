@@ -33,8 +33,9 @@ Derived / sysinfo (NOT separate `pmc_perf.csv` columns — compute or look up):
 Wavefronts_Per_Workgroup  = ceil(prod(Workgroup_Size) / 64)
 Total_Workgroups          = prod(Grid_Size) / prod(Workgroup_Size)
 Compute_Unit_Count        # sysinfo.csv: num_cu (304 on MI300X SPX/NPS1; 256 on MI355X)
-XCD_Count                 # sysinfo.csv: num_xcd (1 in SPX/NPS1 visible context, 8 physical;
-                          # MI355X: 2 IODs × 4 XCDs; MI300X: 4 IODs × 2 XCDs)
+XCD_Count                 # sysinfo.csv: num_xcd (1 in SPX/NPS1 visible context, 8 physical
+                          # on both gens; MI300X = 4 IODs × 2 XCDs/IOD = 8 XCDs;
+                          # MI355X = 2 IODs × 4 XCDs/IOD = 8 XCDs)
 Achieved_Occupancy        # rocprof-compute SoL block (`-b 2`) / wavefront block (`-b 5`),
                           # NOT in pmc_perf.csv as a single column
 Theoretical_Occupancy     # rocprof-compute wavefront block (`-b 5`)
@@ -260,7 +261,7 @@ GRBM_GUI_ACTIVE                        # for normalizing to total time
 
 **MI355X (CDNA4 / gfx950) MFMA notes:**
 
-- New block-scaled `F6F4` family added (`v_mfma_*_f6f4` / `v_mfma_scale_*` with E8M0 block-exponent operand), covering FP4 and FP6 storage formats. Verified per-dtype PMC counters on gfx950 include `SQ_INSTS_VALU_MFMA_MOPS_F6F4` and `SQ_INSTS_VALU_MFMA_MOPS_XF32`; check `rocprofv3 -L | grep MFMA` for the exact suffix list your install exposes (raw `_F4` / `_F6` / `_MXFP4` / `_MXFP6` / `_MXFP8` are **not** distinct PMC counters on gfx950).
+- New block-scaled `F6F4` family added (`v_mfma_*_f6f4` / `v_mfma_scale_*` with E8M0 block-exponent operand), covering FP4 and FP6 storage formats. Canonical tile shapes are `16x16x128` and `32x32x64` for both the unscaled `v_mfma_f32_*_f8f6f4` and the scaled `v_mfma_scale_f32_*_f8f6f4` forms (see the table in [`../cdna3-cdna4-hip-programming.md`](../cdna3-cdna4-hip-programming.md)). Verified per-dtype PMC counters on gfx950 include `SQ_INSTS_VALU_MFMA_MOPS_F6F4` and `SQ_INSTS_VALU_MFMA_MOPS_XF32`; check `rocprofv3 -L | grep MFMA` for the exact suffix list your install exposes (raw `_F4` / `_F6` / `_MXFP4` / `_MXFP6` / `_MXFP8` are **not** distinct PMC counters on gfx950).
 - `XF32` (extended-FP32) MFMA exposed (`SQ_INSTS_VALU_MFMA_MOPS_XF32`); TF32 from prior gens does not exist on CDNA4.
 - FP64 throughput **halved** vs CDNA3 — gfx950 is not the GPU for FP64-dense workloads.
 - 2:4 sparse MFMA variants added (check ISA documentation for exact opcodes).
