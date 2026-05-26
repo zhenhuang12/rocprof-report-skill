@@ -87,7 +87,7 @@ For JIT / framework-integrated builds:
 
 1. **Beta flag missing.** PC sampling is gated behind a beta flag in ROCm 6.4+. The CLI needs `--pc-sampling-beta-enabled` (or set `ROCPROFILER_PC_SAMPLING_BETA_ENABLED=1` in the environment).
 2. **Method not supported on your hardware.** Try `--pc-sampling-method host_trap` first (note the underscore, not `host-trap`) — it works on MI200+ and is the most portable. `stochastic` is lower-overhead but requires MI300+ and a recent ROCm build with the kernel-mode feature compiled in.
-3. **Sampling interval too coarse / wrong unit.** With `host_trap` you MUST use `--pc-sampling-unit time`; the interval is in **microseconds** (1000 = 1 ms is a sensible default; drop to 100 for sub-ms kernels). Passing `cycles` or `instructions` with `host_trap` is rejected at runtime as "PC sampling configuration is not supported"; those units are stochastic-only.
+3. **Sampling interval too coarse / wrong unit.** With `host_trap` you MUST use `--pc-sampling-unit time`; the interval is in **microseconds** with a runtime-enforced minimum (ROCm 6.4+ enforces a floor in the low-µs range and intervals below it return `HSA_STATUS_ERROR_INVALID_ARGUMENT`). 1000 (= 1 ms) is a sensible default; for sub-ms kernels, 100 µs is usually the smallest practical value before host_trap overhead distorts the profile. Passing `cycles` or `instructions` with `host_trap` is rejected at runtime as "PC sampling configuration is not supported"; those units are stochastic-only.
 4. **Kernel too short.** Kernels under ~50 µs may not produce useful sample counts. Increase work in the harness (run the kernel in a small loop — but be aware rocprofv3 replays each PMC group, so this can blow up wall time).
 5. **Permission issue.** Some ROCm builds require `CAP_PERFMON` for PC sampling. Try `sudo` to confirm it's a perms issue.
 
@@ -262,6 +262,7 @@ Either:
 | MI300X (gfx942) discrete | 6.0 | Full support |
 | MI300A APU (gfx942 APU) | 6.0 | Shares counters with discrete; xGMI traffic visible |
 | MI355X (gfx950) | **7.0** | 6.x will refuse `--offload-arch=gfx950` |
-| MFMA `_F6F4` / `_XF32` counters | 7.0 + gfx950 | CDNA4 only — no separate `_F4` / `_F6` / `_MXFP4` / `_MXFP6` / `_MXFP8` PMC suffixes |
+| MFMA `_F6F4` counter | 7.0 + gfx950 | CDNA4 only — no separate `_F4` / `_F6` / `_MXFP4` / `_MXFP6` / `_MXFP8` PMC suffixes |
+| MFMA `_XF32` counter | 6.2 + gfx942/gfx950 | XF32 (TF32-equivalent) MFMA exists on BOTH CDNA3 and CDNA4 — not gfx950-only |
 | ROCprof Compute Viewer | 6.3 | GUI for rocprof-compute output |
 | RGP (Radeon GPU Profiler) | n/a | **Does NOT support CDNA / Instinct.** Use ROCprof Compute Viewer instead. |

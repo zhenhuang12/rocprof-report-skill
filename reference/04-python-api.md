@@ -4,6 +4,8 @@ There is **no single Python module** equivalent to NVIDIA's `ncu_report`. Instea
 
 The shared helpers in [`../helpers/rocprof_utils.py`](../helpers/rocprof_utils.py) implement these patterns for you — copy/paste from there for production scripts.
 
+> **Notation in this file:** `<tag>` is a **literal placeholder** inside all path strings below (e.g. `rpc_<tag>/pmc_perf.csv`) — substitute your actual tag name (`v1`, `baseline`, etc.) by hand before running. The `<tag>` token is not Python interpolation and will produce a `FileNotFoundError` if pasted verbatim.
+
 ---
 
 ## Setup

@@ -7,7 +7,9 @@ When in doubt, enumerate:
 ```bash
 rocprofv3 -L > /tmp/all_counters.txt                    # the canonical authority for your ROCm install
 # Equivalent long form (rocprofv3 ≥ ROCm 6.2):
-rocprofv3 --list-avail > /tmp/all_counters.txt
+rocprofv3 --list-supported-counters > /tmp/all_counters.txt
+# NOTE: the legacy `--list-avail` flag is from rocprof v1 and does NOT exist
+# in rocprofv3 — use `-L` / `--list-supported-counters` instead.
 # On newer ROCm builds, the companion CLI is `rocprofv3-avail list --pmc`.
 # Or, programmatically from a collected report:
 python3 -c "
@@ -34,14 +36,14 @@ print('\n'.join(sorted(pd.read_csv('rpc_<tag>/pmc_perf.csv', nrows=1).columns)))
 | `TA_BUSY_avr` | **`TA_BUSY_avr_per_simd`** (or sum across SIMDs) |
 | `SQ_INSTS_MFMA` exists on gfx908+ | Same aggregate name; per-dtype detail moves to `SQ_INSTS_VALU_MFMA_MOPS_<DTYPE>` on gfx942+ (per-shape PMCs not stable across ROCm versions) |
 | `SQ_BUSY_CYCLES` (gfx9 family) | Same, but on MI300X read **`GRBM_GUI_ACTIVE`** for true GPU-wide active cycles (denominator) |
-| `SQ_INSTS_VALU_MFMA_MOPS_*` (no F6F4/XF32) | **gfx950 adds** `SQ_INSTS_VALU_MFMA_MOPS_F6F4` (block-scaled FP4/FP6 family) and `SQ_INSTS_VALU_MFMA_MOPS_XF32`; verify the exact suffix list with `rocprofv3 -L \| grep MFMA` |
+| `SQ_INSTS_VALU_MFMA_MOPS_*` (no F6F4) | **gfx950 adds** `SQ_INSTS_VALU_MFMA_MOPS_F6F4` (block-scaled FP4/FP6 family). Note: `SQ_INSTS_VALU_MFMA_MOPS_XF32` exists on **both** gfx942 and gfx950 (AMD's XF32 = NVIDIA TF32 equivalent). Verify the exact suffix list with `rocprofv3 -L \| grep MFMA` |
 | `SQ_WAVES` (total wavefronts) | Same name everywhere |
 
 ---
 
 ## Canonical MI300X / MI355X counter set (curated)
 
-These PMC names have been confirmed to exist and return meaningful values on gfx942 and gfx950 with ROCm 6.4 / 7.x. Always verify for your specific build with `rocprofv3 -L` (long form `--list-avail`). The legacy `--list-metrics` / `--list-counters` flags are rocprof v1/v2 only and not part of rocprofv3.
+These PMC names have been confirmed to exist and return meaningful values on gfx942 and gfx950 with ROCm 6.4 / 7.x. Always verify for your specific build with `rocprofv3 -L` (long form `--list-supported-counters`). The legacy `--list-metrics` / `--list-counters` / `--list-avail` flags are rocprof v1/v2 only and not part of rocprofv3.
 
 ### Launch / wave geometry (from `pmc_perf.csv` per-dispatch columns, not PMCs)
 ```
@@ -189,8 +191,8 @@ The MFMA per-dtype counters on gfx942 / gfx950 use the prefix
 suffixes exposed depends on the ROCm version — enumerate with
 `rocprofv3 -L | grep -i MFMA`. The aggregate `SQ_INSTS_MFMA` is always available.
 
-Verified `SQ_INSTS_VALU_MFMA_MOPS_<DTYPE>` suffixes on gfx950 (`rocprofv3 -L | grep MFMA`):
-**F16, BF16, F32, F64, I8, F8, XF32, F6F4**.
+Verified `SQ_INSTS_VALU_MFMA_MOPS_<DTYPE>` suffixes (`rocprofv3 -L | grep MFMA`):
+**F16, BF16, F32, F64, I8, F8, BF8, XF32** on gfx942; the same set **plus F6F4** on gfx950.
 
 ```
 SQ_INSTS_MFMA                         # total MFMA issued (aggregate)
@@ -199,9 +201,10 @@ SQ_INSTS_VALU_MFMA_MOPS_BF16
 SQ_INSTS_VALU_MFMA_MOPS_F32
 SQ_INSTS_VALU_MFMA_MOPS_F64           # CDNA3 full throughput; CDNA4 halved
 SQ_INSTS_VALU_MFMA_MOPS_I8
-SQ_INSTS_VALU_MFMA_MOPS_F8            # CDNA3 (OCP-FNUZ) / CDNA4 (OCP standard)
-SQ_INSTS_VALU_MFMA_MOPS_XF32          # CDNA4 — extended-FP32 MFMA
-SQ_INSTS_VALU_MFMA_MOPS_F6F4          # CDNA4 — block-scaled FP6/FP4 family
+SQ_INSTS_VALU_MFMA_MOPS_F8            # FP8 inputs: OCP-FNUZ on gfx942, OCP standard E4M3 on gfx950
+SQ_INSTS_VALU_MFMA_MOPS_BF8           # BF8 (E5M2) inputs, paired with F8 in mixed_f8_bf8 MFMA on both gens
+SQ_INSTS_VALU_MFMA_MOPS_XF32          # XF32 (19-bit, TF32-equivalent) MFMA — present on BOTH gfx942 and gfx950
+SQ_INSTS_VALU_MFMA_MOPS_F6F4          # gfx950 only — block-scaled FP6/FP4 family
 # There are NO distinct `_F4` / `_F6` / `_MXFP4` / `_MXFP6` / `_MXFP8` PMC counters
 # on gfx950 — the block-scaled MX-style formats roll up into `_F6F4`.
 SQ_VALU_MFMA_BUSY_CYCLES              # cycles MFMA pipe was busy (proxy for "matrix-core busy")
@@ -333,7 +336,7 @@ print('\n'.join(sorted(c for c in cols if c.startswith('SQ_'))))
 2. **Counter value is `0`**: either the hardware feature reports zero (e.g., no MFMA activity), or the counter is conditional on a feature flag (e.g., FP4 counters require gfx950).
 3. **`_sum` vs `_avr` vs `_max`**: counter suffix indicates aggregation. `_sum` = total across all CUs / channels / SEs; `_avr` = per-instance average; `_max` = max instance value. Don't re-sum a `_sum`.
 4. **`TCC_EA_*` (no number) on MI300X**: that's the gfx906/908 spelling — on gfx942/gfx950 use `TCC_EA0_*`. There is **no** `TCC_EA1_*` on these gens, so don't sum two channels.
-5. **MFMA `F6F4` / `XF32` per-dtype counters missing**: gfx950 only. ROCm 6.x will not enumerate them; ROCm 7+ required for MI355X. Always check `rocprofv3 -L | grep -i MFMA` for the exact suffixes your build exposes (no `_F4` / `_F6` / `_MXFP4` / `_MXFP6` / `_MXFP8` counters exist — they roll up into `_F6F4`).
+5. **MFMA per-dtype counters**: `F6F4` is gfx950-only (requires ROCm 7+ on MI355X). `XF32` exists on BOTH gfx942 and gfx950 (AMD's XF32 ≡ NVIDIA TF32). `BF8` exists on both. Always check `rocprofv3 -L | grep -i MFMA` for the exact suffixes your build exposes (no `_F4` / `_F6` / `_MXFP4` / `_MXFP6` / `_MXFP8` counters exist — block-scaled formats roll up into `_F6F4`).
 6. **`Accum_VGPR` column reports 0** on a kernel you expect to use MFMA: either the compiler chose to spill MFMA accumulators into VGPRs (lower performance), or MFMA isn't being emitted — check ISA with `llvm-objdump -d`. The column is named `Accum_VGPR`, not `AGPRs`.
 7. **MI300A (APU variant of gfx942)** shares the gfx942 counter set with MI300X discrete, but `TCC_EA*_IO_*` traffic includes CPU↔GPU coherent memory.
 8. **Per-XCD attribution**: rocprof-compute's workgroup-balance breakdown aggregates per CU, but MI300X has 8 XCDs each with 38 CUs (MI355X: 8 × 32). To see per-XCD load you have to group CUs by index range (CU 0-37 = XCD0, 38-75 = XCD1, …) or rely on the per-CU active-cycle output and grouping by `cu // (cus_per_xcd)`.

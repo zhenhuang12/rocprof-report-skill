@@ -177,7 +177,10 @@ _COMMON_GEOMETRY = [
     "Dispatch_ID", "Kernel_Name", "GPU_ID",
     "Grid_Size", "Workgroup_Size",
     "LDS_Per_Workgroup", "Scratch_Per_Workitem",
-    "Arch_VGPR", "Accum_VGPR", "SGPR", "Wave_Size",
+    "Arch_VGPR", "Accum_VGPR", "SGPR",
+    # Wave_Size is NOT in pmc_perf.csv on gfx942/gfx950 — wave size is fixed at
+    # 64 on CDNA and reported in sysinfo.csv. Listing it here produces a
+    # spurious "N/A" column in the compare output, so it's omitted.
 ]
 
 _COMMON_SQ = [

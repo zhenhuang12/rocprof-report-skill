@@ -217,10 +217,15 @@ All of the helper scripts in `../helpers/` accept an explicit `--run-dir` (or eq
 
 ## Checklist before starting a profile run
 
-1. `mkdir -p profile/<new_run_name>/{harness,reports,analysis}` — make the three subdirs up front.
-2. Copy or write the harness source into `profile/<new_run_name>/harness/`.
+0. **Export both env vars first** — every later step (and every helper script under `$SKILL/helpers/`) depends on them:
+   ```bash
+   export PROFILE_RUN_DIR="$PWD/profile/<new_run_name>"
+   export SKILL=~/.claude/skills/rocprof-report-skill   # or <repo>/.claude/skills/rocprof-report-skill
+   ```
+1. `mkdir -p "$PROFILE_RUN_DIR"/{harness,reports,analysis}` — make the three subdirs up front.
+2. Copy or write the harness source into `$PROFILE_RUN_DIR/harness/`.
 3. Compile into the same dir with `-gline-tables-only` (or `-g`) and the correct `--offload-arch`.
-4. Run rocprofv3 / rocprof-compute with `-d` / `-p` pointing under `profile/<new_run_name>/reports/`.
-5. Put analysis scripts under `profile/<new_run_name>/analysis/`.
-6. Write `REPORT.md` at `profile/<new_run_name>/REPORT.md`.
-7. Before starting a *new* run, go back to step 1 with a new name — never write into the existing one.
+4. Run rocprofv3 / rocprof-compute with `-d` / `-p` pointing under `$PROFILE_RUN_DIR/reports/`.
+5. Run the parser helpers from `$SKILL/helpers/` (e.g. `python3 "$SKILL/helpers/analyze_reports.py" --run-dir "$PROFILE_RUN_DIR" ...`); their output lands under `$PROFILE_RUN_DIR/analysis/`.
+6. Write `REPORT.md` at `$PROFILE_RUN_DIR/REPORT.md`.
+7. Before starting a *new* run, re-export `$PROFILE_RUN_DIR` with a new name and go back to step 1 — never write into an existing run dir.

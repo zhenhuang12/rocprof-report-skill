@@ -35,6 +35,7 @@ If you are coming from NVIDIA, the most important mental adjustments are:
 | Peak BF16 (MFMA) | ~1307 TFLOPS dense | ~980 TFLOPS |
 | Peak FP8 (MFMA) | ~2614 TFLOPS dense (OCP-FNUZ) | ~1960 TFLOPS |
 | Peak FP16 (MFMA) | ~1307 TFLOPS dense | — |
+| Peak XF32 (TF32-equiv MFMA) | ~654 TFLOPS dense (`v_mfma_f32_*_xf32`) | — |
 | Wave dispatch | 8 waves/SIMD theoretical | same |
 | Compute partitions | SPX (1) / DPX (2) / QPX (4) / CPX (8) | SPX / DPX / CPX (fewer) |
 | Memory partitions (NPS) | NPS1 (interleaved) / NPS2 / NPS4 | NPS1 |
@@ -52,11 +53,11 @@ If you are coming from NVIDIA, the most important mental adjustments are:
 | L2 (TCC) | per-XCD, 4 MB |
 | **Infinity Cache** | **256 MB retained** (coupled to HBM3E in CDNA4) |
 | HBM | 288 GB HBM3E @ 8.0 TB/s |
-| Peak FP64 (MFMA) | ~halved vs CDNA3 |
-| Peak BF16/FP16 (MFMA) | higher than CDNA3 |
-| Peak FP8 (MFMA, OCP standard) | substantially higher than CDNA3 |
-| Peak FP6 / FP4 / MXFP | new on CDNA4 — see MFMA shape table below |
-| TF32 | **removed** |
+| Peak FP64 (MFMA) | ~78.6 TFLOPS dense (~halved vs CDNA3's 163 TFLOPS) |
+| Peak BF16/FP16 (MFMA) | ~5 PFLOPS dense (~3.8× CDNA3's 1307 TFLOPS) |
+| Peak FP8 (MFMA, OCP standard E4M3/E5M2) | ~10.1 PFLOPS dense (~3.9× CDNA3's 2614 TFLOPS) |
+| Peak FP6 / FP4 / MXFP | ~20.1 PFLOPS dense each — FP6 shares the FP4 datapath; new on CDNA4 |
+| TF32 | **removed** (XF32 MFMA — present on CDNA3 — is also gone on CDNA4) |
 | 2:4 sparsity | **added** |
 | `global_load_lds` widths | wider per-lane variants than CDNA3 (check the LLVM intrinsic / ISA reference for the exact widths your toolchain emits) |
 | Compute partitions | SPX / CPX (other modes depend on ROCm 7 release) |
@@ -173,8 +174,10 @@ CDNA matrix cores are called **MFMA** (Matrix Fused Multiply-Add). Unlike NVIDIA
 
 | Shape | A dtype | B dtype | C/D dtype | Notes |
 |---|---|---|---|---|
-| `v_mfma_f32_16x16x4f32` | FP32 | FP32 | FP32 | "TF32-like", legacy CDNA1 |
-| `v_mfma_f32_32x32x2f32` | FP32 | FP32 | FP32 | |
+| `v_mfma_f32_16x16x4f32` | FP32 | FP32 | FP32 | plain IEEE FP32 MFMA (NOT TF32-like) |
+| `v_mfma_f32_32x32x2f32` | FP32 | FP32 | FP32 | plain IEEE FP32 MFMA |
+| `v_mfma_f32_16x16x8_xf32` | XF32 (19-bit, TF32-like) | XF32 | FP32 | AMD XF32 = NVIDIA TF32 equivalent, ~654 TFLOPS peak on gfx942 |
+| `v_mfma_f32_32x32x4_xf32` | XF32 | XF32 | FP32 | bigger-tile XF32; same peak FLOPS |
 | `v_mfma_f32_16x16x16f16` | FP16 | FP16 | FP32 | dense |
 | `v_mfma_f32_32x32x8f16` | FP16 | FP16 | FP32 | dense |
 | `v_mfma_f32_16x16x16bf16_1k` | BF16 | BF16 | FP32 | "1k" = 1 k-block per instruction |

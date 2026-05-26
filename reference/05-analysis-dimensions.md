@@ -317,7 +317,9 @@ TCC_EA0_RDREQ_sum                              # HBM read requests (count)
 TCC_EA0_RDREQ_32B_sum                          # 32B-sized read requests
 TCC_EA0_WRREQ_sum                              # HBM write requests
 TCC_EA0_WRREQ_64B_sum
-TCC_EA0_REQ                                    # all requests
+# NOTE: there is NO `TCC_EA0_REQ` aggregate on gfx942/gfx950. For total L2
+# requests use `TCC_REQ_sum` (L2-side); for EA-side totals, sum the
+# `TCC_EA0_RDREQ_sum` + `TCC_EA0_WRREQ_sum` rows above.
 TCC_EA0_MEM_REQ_LATENCY                        # latency histogram (if collected)
 # Achieved HBM BW ≈ (TCC_EA0_RDREQ_32B_sum * 32 + TCC_EA0_WRREQ_64B_sum * 64) / kernel_time
 

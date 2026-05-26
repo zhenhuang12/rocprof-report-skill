@@ -88,7 +88,7 @@ Minimal runnable command listing:
     └── analysis/                           ← extracted metrics (helpers run from $SKILL/helpers/)
         ├── details_<tag>.txt               ← `rocprof-compute analyze` dump
         ├── metrics_all_<tag>.json          ← every parsed counter, full archive
-        ├── metrics_key_<tag>.json          ← curated key metrics
+        ├── metrics_key_<tag>.{json,txt}    ← curated key metrics (helper writes both)
         ├── stall_hotspots_<tag>.txt        ← per-line stall aggregation (PC sampling / ATT)
         ├── timeline_plots.txt              ← ASCII timeseries / per-CU plots (one file per run)
         └── compare_<tag1>_vs_<tag2>.txt
@@ -133,7 +133,7 @@ Minimal runnable command listing:
 <per-XCD active cycles, rocprof-compute workgroup-balance breakdown, timeseries shape, input distribution imbalance ratios>
 
 ### 2.3 Instruction-level stall analysis
-<stall breakdown % from PC-sampling `Wait_Reason` aggregation (the ONLY granular source on gfx942/gfx950 — only `SQ_WAIT_ANY`, `SQ_WAIT_INST_ANY`, `SQ_WAIT_INST_LDS` exist as PMCs). Top source-line hotspots from PC sampling: `(file:line, Wait_Reason, sample %)`. Wait reasons to call out: WAIT_INST_VMEM, WAIT_INST_LDS, WAIT_INST_SMEM, WAIT_INST_FLAT, WAIT_BARRIER, WAIT_VMCNT, WAIT_LGKMCNT, WAIT_EXPCNT, WAIT_MISC (the last two may not be present on every install — verify against your PC-sampling CSV's `Wait_Reason` column and `rocprofv3 -L`).>
+<stall breakdown % from PC-sampling `Wait_Reason` aggregation (the ONLY granular source on gfx942/gfx950 — only `SQ_WAIT_ANY`, `SQ_WAIT_INST_ANY`, `SQ_WAIT_INST_LDS` exist as PMCs). Top source-line hotspots from PC sampling: `(file:line, Wait_Reason, sample %)`. The wait-reason taxonomy splits into two families: **issue-stall** (WAIT_INST_VMEM, WAIT_INST_LDS, WAIT_INST_SMEM, WAIT_INST_FLAT, WAIT_INST_VALU, WAIT_INST_SALU, WAIT_BARRIER) and **scoreboard-wait** (WAIT_VMCNT, WAIT_LGKMCNT, WAIT_EXPCNT). Install-specific labels (WAIT_MISC, WAIT_INST_VMEM_GBL, etc.) vary across ROCm releases — always verify against your PC-sampling CSV's actual `Wait_Reason` column values rather than assuming the list above is complete.>
 
 ### 2.4 MFMA / matrix-core utilization
 <MFMA busy % from rocprof-compute compute-pipe block (`-b 10`); MFMA instruction counts from instruction-mix block (`-b 11`); instruction shape (16×16×16 BF16 / 32×32×8 / FP8 on CDNA3; F6F4 / XF32 on CDNA4), Accum_VGPR (AGPR) usage; or "0%, n/a — kernel is non-MFMA". Cite the actual per-dtype `SQ_INSTS_VALU_MFMA_MOPS_<DTYPE>` counters your install exposes (`rocprofv3 -L | grep MFMA`).>

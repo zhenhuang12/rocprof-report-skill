@@ -10,6 +10,7 @@ This document lists the exact `rocprofv3` and `rocprof-compute` commands you sho
 - `rocprofv3` (ROCm 6.2+) and `rocprof-compute` (ROCm 6.3+, formerly Omniperf) on PATH.
 - User in `render` group (and `video` on some distros); ATT and PC sampling may additionally need `CAP_PERFMON` or `kfd_admin_group` — check `getfacl /dev/kfd`.
 - Kernel name known (check with `llvm-objdump --syms --demangle <code-object>` if unsure — see `02-harness-guide.md`).
+- **`$PROFILE_RUN_DIR` exported** (Phase 0 in [`01-workflow.md`](01-workflow.md) and the Quickstart in [`../SKILL.md`](../SKILL.md)). Every recipe below writes to `$PROFILE_RUN_DIR/reports/...` and silently misfires (output lands at `/reports/...`) if the variable is unset.
 
 Quick smoke test:
 ```bash
@@ -148,6 +149,21 @@ rocprofv3 --pc-sampling-beta-enabled \
 | `-f` / `--output-format` | Format of output: `{csv, json, pftrace, otf2, rocpd}`. Use `csv` for downstream pandas parsing; default writes to `%hostname%/%pid%/` structure. |
 
 Output: per-kernel CSV with `Instruction_Address`, `Source` (file:line, populated only when compiled with `-gline-tables-only`/`-g`), `Instruction_Comment` (the SASS-equivalent text on AMD: the ISA mnemonic), `Wait_Reason`, `Sample_Count`.
+
+**Stochastic alternative (MI300+; lower overhead, only if your ROCm build enables it):**
+
+```bash
+rocprofv3 --pc-sampling-beta-enabled \
+    --pc-sampling-method stochastic \
+    --pc-sampling-unit cycles \
+    --pc-sampling-interval 1048576 \
+    --kernel-include-regex "KERNEL_REGEX" \
+    -f csv \
+    -d $PROFILE_RUN_DIR/reports/pcsamp_<tag> \
+    -- ./harness [args]
+```
+
+For `stochastic` the unit MUST be `cycles` or `instructions` (NOT `time`). `1048576` (= 2^20) cycles is a sensible default; lower the value for short kernels but expect higher overhead. If your build rejects stochastic with "PC sampling configuration is not supported", fall back to `host_trap`.
 
 Use `extract_stall_hotspots.py` to aggregate these by `(file, line)` and by wait reason.
 

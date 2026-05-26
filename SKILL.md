@@ -78,7 +78,7 @@ Most under-performing HIP kernels are under-performing for exactly one reason th
 
 ## Critical lessons (don't skip)
 
-1. **Don't transplant NVIDIA-style metric names.** AMD has its own counter taxonomy: `SQ_*` (shader / wave), `TCP_*` (vL1 cache), `TCC_EA0_*` (L2 on MI300+ — note the `_EA0` / `_EA1` channel suffix, NOT `TCC_EA_*`), `GRBM_*` (graphics / global). Many third-party blog posts cite gfx906 (MI50) or gfx908 (MI100) names that no longer exist on gfx942 / gfx950. Use the lists in [`reference/08-mi300x-mi355x-counter-names.md`](reference/08-mi300x-mi355x-counter-names.md) or enumerate via `rocprofv3 -L` (`--list-avail`).
+1. **Don't transplant NVIDIA-style metric names.** AMD has its own counter taxonomy: `SQ_*` (shader / wave), `TCP_*` (vL1 cache), `TCC_EA0_*` (L2 on MI300+ — note the `_EA0` / `_EA1` channel suffix, NOT `TCC_EA_*`), `GRBM_*` (graphics / global). Many third-party blog posts cite gfx906 (MI50) or gfx908 (MI100) names that no longer exist on gfx942 / gfx950. Use the lists in [`reference/08-mi300x-mi355x-counter-names.md`](reference/08-mi300x-mi355x-counter-names.md) or enumerate via `rocprofv3 -L` (`--list-supported-counters`; the older `--list-avail` is rocprof v1 and does NOT exist in rocprofv3).
 
 2. **Always compile with `-gline-tables-only` (or `-g`).** Without it, the `Source` column in ATT output and the `Instruction_Comment` column in PC-sampling output are blank — and you cannot do per-line stall analysis. If you can't add `-gline-tables-only` to the build system (PyTorch's `torch.utils.cpp_extension`, Triton, hipBLASLt JIT), **build a standalone harness** — that's the whole point.
 

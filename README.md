@@ -116,11 +116,17 @@ mkdir -p "$PROFILE_RUN_DIR"/{harness,reports,analysis}
 
 # Extract key metrics from a rocprof-compute "profile" output directory.
 # Pass --arch explicitly (gfx942 for MI300X, gfx950 for MI355X) and
-# --kernel to filter the dispatches; the script defaults to gfx942 otherwise.
+# --kernel to filter the dispatches. When --arch is omitted the script
+# auto-detects from the report's sysinfo.csv (falling back to gfx942 if
+# detection fails); pass --arch to override.
 python3 "$SKILL/helpers/analyze_reports.py" \
     --run-dir "$PROFILE_RUN_DIR" \
     --rpc "$PROFILE_RUN_DIR/reports/rpc_<tag>" --tag <tag> \
     --kernel "<your_kernel_substring>" --arch gfx942
+# For A/B comparison, pass --rpc/--tag once per variant in the same call:
+#   --rpc "$PROFILE_RUN_DIR/reports/rpc_v1" --tag v1 \
+#   --rpc "$PROFILE_RUN_DIR/reports/rpc_v2" --tag v2
+# The script writes compare_v1_vs_v2.txt to <run-dir>/analysis/.
 
 # Per-line stall hotspots: --pcsamp-dir globs the rocprofv3 nested layout
 # (e.g. pmc_1/<host>/<pid>_pc_sampling_host_trap_v0.csv), so you don't have to

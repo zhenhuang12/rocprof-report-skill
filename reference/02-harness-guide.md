@@ -39,7 +39,7 @@ A complete reusable template lives at [`../helpers/harness_template.hip`](../hel
 4. **Fill in `alloc_and_fill()`** to allocate/initialize inputs correctly for your kernel.
 5. **Fill in `launch_kernel()`** to do the actual kernel launch with the right arguments.
 
-Compile with:
+Compile with (assumes `$PROFILE_RUN_DIR` is exported per Phase 0 in [`01-workflow.md`](01-workflow.md); the harness binary belongs under `$PROFILE_RUN_DIR/harness/` per the directory-layout rule in [`00-directory-layout.md`](00-directory-layout.md)):
 ```bash
 # MI300X only (CDNA3, gfx942)
 # -DHARNESS_FILLED_IN=1 disables the helpers/harness_template.hip guard that
@@ -49,14 +49,16 @@ hipcc -O3 -std=c++17 -gline-tables-only \
       --offload-arch=gfx942 \
       -munsafe-fp-atomics \
       -DHARNESS_FILLED_IN=1 \
-      harness.hip -o harness
+      "$PROFILE_RUN_DIR/harness/harness.hip" \
+      -o "$PROFILE_RUN_DIR/harness/harness"
 
 # MI300X + MI355X fat binary (ROCm 7+ required for gfx950)
 hipcc -O3 -std=c++17 -gline-tables-only \
       --offload-arch=gfx942 --offload-arch=gfx950 \
       -munsafe-fp-atomics \
       -DHARNESS_FILLED_IN=1 \
-      harness.hip -o harness
+      "$PROFILE_RUN_DIR/harness/harness.hip" \
+      -o "$PROFILE_RUN_DIR/harness/harness"
 ```
 
 Check your GPU's arch with `rocminfo | grep gfx` or `rocm-smi --showproductname`. If `hipErrorInvalidDeviceFunction` fires at launch, the binary doesn't contain a code object matching the runtime's `gfx` ID — add the matching `--offload-arch=...`.
@@ -165,7 +167,7 @@ Each `.jsonl` line looks like:
 
 Scalars are inline; tensors live in the safetensors blob at the given relative path (relative to the dataset root).
 
-**Helper: [`../helpers/list_flashinfer_workloads.py`](../helpers/list_flashinfer_workloads.py).** (Vendor-neutral — same script that shipped with the NVIDIA version.)
+**Helper: [`../helpers/list_flashinfer_workloads.py`](../helpers/list_flashinfer_workloads.py).** (Vendor-neutral — same script that shipped with the NVIDIA version.) Assumes `$SKILL` is exported per Phase 0 in [`01-workflow.md`](01-workflow.md) (typically `~/.claude/skills/rocprof-report-skill` or `<repo>/.claude/skills/rocprof-report-skill`).
 
 ```bash
 export FIB_DATASET_PATH=/abs/path/to/flashinfer-trace

@@ -66,7 +66,11 @@ def _resolve_kernel_trace(rpc_dir: Path, tag: str, explicit: Path | None) -> Pat
     # Sibling convention: reports/rpc_<tag>/  ←→  reports/trace_<tag>/
     parent = rpc_dir.parent
     candidates = []
+    # rocprofv3 --kernel-trace -d <out> with no rocprof-compute wrapping
+    # writes <pid>_kernel_trace.csv flat under <out>/ (no <host>/<pid>/ subdir).
     candidates.extend(sorted(parent.glob(f"trace_{tag}/kernel_trace.csv")))
+    candidates.extend(sorted(parent.glob(f"trace_{tag}/*_kernel_trace.csv")))
+    # Nested layout (rocprof-compute or csv-format with host/pid subdirs):
     candidates.extend(sorted(parent.glob(f"trace_{tag}/**/kernel_trace.csv")))
     candidates.extend(sorted(parent.glob(f"trace_{tag}/**/*_kernel_trace.csv")))
     return candidates[0] if candidates else None
