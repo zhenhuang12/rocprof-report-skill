@@ -290,15 +290,29 @@ def _resolve_pcsamp_dir(d):
 
 
 def main():
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(
+        description=(
+            "Aggregate PC-sampling / ATT data into per-line stall hotspots.\n\n"
+            "TAG ORDERING: --tag values map to inputs in this fixed order: "
+            "ALL --pcsamp first, THEN all --pcsamp-dir, THEN all --att-dir "
+            "(regardless of the order you typed the flags on the command line). "
+            "Group your --tag flags in the same order or the labels will be wrong."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     ap.add_argument("--run-dir", type=Path, required=True)
     ap.add_argument("--pcsamp", type=Path, action="append", default=[],
-                    help="Path to PC-sampling CSV. Pass multiple with repeated flag.")
+                    help="Path to PC-sampling CSV. Pass multiple with repeated flag. "
+                         "Consumed FIRST when zipping against --tag.")
     ap.add_argument("--pcsamp-dir", type=Path, action="append", default=[],
-                    help="Path to a pcsamp_<tag> dir; globs pc_sampling_*.csv inside.")
+                    help="Path to a pcsamp_<tag> dir; globs pc_sampling_*.csv inside. "
+                         "Consumed SECOND when zipping against --tag.")
     ap.add_argument("--att-dir", type=Path, action="append", default=[],
-                    help="Path to an att_<tag> directory containing per-SE/CU JSON.")
-    ap.add_argument("--tag", type=str, action="append", required=True)
+                    help="Path to an att_<tag> directory containing per-SE/CU JSON. "
+                         "Consumed LAST when zipping against --tag.")
+    ap.add_argument("--tag", type=str, action="append", required=True,
+                    help="One per input. Order must match --pcsamp, then --pcsamp-dir, "
+                         "then --att-dir (see ordering note above).")
     ap.add_argument("--top", type=int, default=30)
     args = ap.parse_args()
 

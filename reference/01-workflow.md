@@ -159,7 +159,7 @@ Minimum analysis artifacts to produce:
 | `metrics_all_<tag>.json` | `analyze_reports.py` | Full PMC dump, archive for later |
 | `compare_<a>_vs_<b>.txt` | `analyze_reports.py` | Side-by-side metric comparison between workloads / versions |
 | `stall_hotspots_<tag>.txt` | `extract_stall_hotspots.py` | Top source lines ranked by stall samples (from PC-sampling or ATT) |
-| `timeline_plots.txt` | `plot_timeline.py` | ASCII time-series plots — reveals tail effect visually |
+| `timeline_plots_<tag_suffix>.txt` | `plot_timeline.py` | ASCII time-series plots — reveals tail effect visually. One file per invocation; the suffix is the joined `--tag` values (e.g. a single 2-tag invocation produces `timeline_plots_<tag1>_<tag2>.txt`). |
 | `details_<tag>.txt` | `rocprof-compute analyze -p ...` | rocprof-compute's built-in section reports (each with peak-comparison + bottleneck hints). `--list-stats` lists kernels and dispatches (NOT section IDs); for section / metric IDs use `--list-metrics <gfx_arch>`. Omit both to get the full dump. |
 
 Canonical invocations (drop into a shell after Phase 3 completes):

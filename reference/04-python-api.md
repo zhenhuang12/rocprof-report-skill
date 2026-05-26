@@ -24,36 +24,42 @@ The helpers degrade gracefully if `rocpd` isn't importable — they fall back to
 
 ## Basic loading — `rocprof-compute profile` output
 
-`rocprof-compute profile -p <dir>` writes a directory; key files:
+`rocprof-compute profile -p <dir>` writes a directory; key files (the default
+`--subpath gpu` adds a `<gpu_model>/` level — `RPC_DIR` below means *the dir that
+actually holds `pmc_perf.csv`*, i.e. the `-p` value joined with the `<gpu_model>/`
+child like `MI300X/` or `MI355X/`):
 
 ```
-rpc_<tag>/                ← when you pass `-p <dir>`, files land FLAT under it
-├── pmc_perf.csv          ← all collected PMCs land here, one row per dispatch
-├── pmc_kernel_top.csv    ← top-K kernels by dispatch count / time (when present)
-├── sysinfo.csv           ← wide single-row: gfx arch, ROCm version, CU count, partition, etc.
-├── log.txt               ← rocprof-compute invocation log
-├── profiling_config.yaml ← captured invocation config
-├── roofline.pdf          ← PDF when roofline ran (default-on; `--no-roof` to skip)
-├── perfmon/              ← per-PMC-group .txt/.yaml input files (not analysis data)
-└── out/pmc_<N>/<host>/<pid>_{kernel_trace,counter_collection,agent_info}.csv
-                           ← raw per-pass dumps before merge
+rpc_<tag>/                       ← the `-p` value you passed
+└── <gpu_model>/                 ← e.g. `MI300X/`; default `--subpath gpu` adds this child
+    ├── pmc_perf.csv             ← all collected PMCs land here, one row per dispatch
+    ├── timestamps.csv           ← per-dispatch Start/End_Timestamp (rocprof-compute does emit this)
+    ├── sysinfo.csv              ← wide single-row: gfx arch, ROCm version, CU count, partition, etc.
+    ├── log.txt                  ← rocprof-compute invocation log
+    ├── profiling_config.yaml    ← captured invocation config
+    ├── roofline.csv             ← roofline benchmark results (when roofline ran; default-on, --no-roof to skip)
+    ├── empirRoof_gpu-0_*.pdf    ← roofline PDF plots (only with `--roof-only` / `--kernel-names`)
+    ├── perfmon/                 ← per-PMC-group .txt/.yaml input files (not analysis data)
+    └── out/pmc_<N>/<host>/<pid>_{kernel_trace,counter_collection,agent_info}.csv
+                                  ← raw per-pass dumps before merge
 ```
 
 Notes:
-- There is **no `timestamps.csv`** in current rocprof-compute. Per-kernel wall-clock
-  duration is in `pmc_perf.csv` columns and in rocprofv3's `kernel_trace.csv` (run
-  a separate `rocprofv3 --kernel-trace -f csv -d <path>`).
-- There is **no top-level `roofline.csv`**. When roofline runs, the artifact is a PDF.
+- The artifacts live under `<-p>/<gpu_model>/`, not directly under `<-p>/`. Helpers in
+  `$SKILL/helpers/` glob-resolve the `<gpu_model>/` child for you. If you `ls` by
+  hand, descend one level. (To force a flat layout, pass `--subpath node_name` — but
+  then helper paths must be updated to match.)
 - There is no `SoC/` subdir — every counter lives in `pmc_perf.csv`.
-- When `-p` is omitted, output defaults to `<cwd>/workloads/<name>/` (no `<gpu_model>/`
-  injection in current 7.x).
 
 ```python
 import os, pandas as pd
 from pathlib import Path
 
 RUN = os.environ["PROFILE_RUN_DIR"]
-RPC_DIR = Path(f"{RUN}/reports/rpc_<tag>")
+RPC_TOP = Path(f"{RUN}/reports/rpc_<tag>")
+# Resolve the actual workload dir (the `<gpu_model>/` child).
+hits = list(RPC_TOP.glob("*/pmc_perf.csv"))
+RPC_DIR = hits[0].parent if hits else RPC_TOP  # fallback if a future --subpath flattens
 
 pmc = pd.read_csv(RPC_DIR / "pmc_perf.csv")
 
@@ -62,8 +68,14 @@ mask = pmc["Kernel_Name"].astype(str).str.contains("my_kernel", regex=True)
 pmc_k = pmc[mask]
 print(f"Found {len(pmc_k)} dispatch(es) of my_kernel")
 
-# For wall-clock durations, parse rocprofv3 kernel_trace.csv (has Start/End_Timestamp).
-# rocprof-compute profile no longer emits its own timestamps.csv.
+# Wall-clock durations: either `timestamps.csv` (rocprof-compute) or rocprofv3
+# `kernel_trace.csv` (separate `--kernel-trace -f csv` run).
+ts_path = RPC_DIR / "timestamps.csv"
+if ts_path.exists():
+    ts = pd.read_csv(ts_path)
+    ts_k = ts[ts["Kernel_Name"].astype(str).str.contains("my_kernel", regex=True)]
+    print(f"Total runtime: {(ts_k['End_Timestamp'] - ts_k['Start_Timestamp']).sum() / 1e3:.2f} µs")
+
 ktrace_glob = list(Path(f"{RUN}/reports/trace_<tag>").rglob("*_kernel_trace.csv"))
 if ktrace_glob:
     kt = pd.concat([pd.read_csv(p) for p in ktrace_glob], ignore_index=True)
@@ -71,7 +83,7 @@ if ktrace_glob:
     print(f"Total runtime: {(kt_k['End_Timestamp'] - kt_k['Start_Timestamp']).sum() / 1e3:.2f} µs")
 ```
 
-`pmc_perf.csv` columns vary by ROCm release — confirm with `pmc.columns.tolist()`. Core launch columns present on all recent releases: `Dispatch_ID, Kernel_Name, GPU_ID, Queue_ID, PID, TID, Grid_Size, Workgroup_Size, LDS_Per_Workgroup, Scratch_Per_Workitem, Arch_VGPR, Accum_VGPR, SGPR` + each PMC counter as its own column. (Wave size is fixed at 64 on CDNA gfx9 and reported in `sysinfo.csv`, not as a per-dispatch `pmc_perf.csv` column on gfx942/gfx950.) Some releases also expose `Kernel_ID` and `Correlation_ID`; treat both as optional. **There are no `VGPRs`/`SGPRs`/`AGPRs` plural columns and no `Start_Timestamp`/`End_Timestamp` columns** — use `Arch_VGPR`/`Accum_VGPR`/`SGPR` (singular) and read durations from `kernel_trace.csv`.
+`pmc_perf.csv` columns vary by ROCm release — confirm with `pmc.columns.tolist()`. Core launch columns present on all recent releases: `Dispatch_ID, Kernel_Name, GPU_ID, Queue_ID, PID, TID, Grid_Size, Workgroup_Size, LDS_Per_Workgroup, Scratch_Per_Workitem, Arch_VGPR, Accum_VGPR, SGPR` + each PMC counter as its own column. (Wave size is fixed at 64 on CDNA gfx9 and reported in `sysinfo.csv`, not as a per-dispatch `pmc_perf.csv` column on gfx942/gfx950.) Some releases also expose `Kernel_ID` and `Correlation_ID`; treat both as optional. **There are no `VGPRs`/`SGPRs`/`AGPRs` plural columns** — use `Arch_VGPR`/`Accum_VGPR`/`SGPR` (singular). Per-dispatch wall-clock timestamps live in the sibling `timestamps.csv` (rocprof-compute) and/or rocprofv3's `kernel_trace.csv`, not in `pmc_perf.csv` itself.
 
 ---
 
@@ -218,7 +230,10 @@ ROCm 7+ rocprofv3 defaults to a single `.db` per run, using the public `rocpd` s
 import os, sqlite3, pandas as pd
 RUN = os.environ["PROFILE_RUN_DIR"]
 
-con = sqlite3.connect(f"{RUN}/reports/trace_<tag>/<run>.db")
+from pathlib import Path
+# rocprofv3 names the file `<pid>_results.db` (PID is unstable per run), so glob it
+db_path = next(Path(f"{RUN}/reports/trace_<tag>").glob("*_results.db"))
+con = sqlite3.connect(db_path)
 
 # Kernel durations
 ker = pd.read_sql("""

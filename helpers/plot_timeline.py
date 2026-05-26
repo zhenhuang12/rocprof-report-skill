@@ -190,13 +190,24 @@ def plot_per_cu(rpc_dir, counters, rows, cols):
 
 
 def main():
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(
+        description=(
+            "ASCII timeline / per-CU distribution plots.\n\n"
+            "TAG ORDERING: --tag values map to inputs in this fixed order: "
+            "ALL --timeseries first, THEN all --rpc (regardless of the order "
+            "you typed the flags). Group your --tag flags in the same order."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     ap.add_argument("--run-dir", type=Path, required=True)
     ap.add_argument("--timeseries", type=Path, action="append", default=[],
-                    help="Path to pmc_perf_timeseries.csv. Pass multiple with repeated flag.")
+                    help="Path to pmc_perf_timeseries.csv. Pass multiple with repeated flag. "
+                         "Consumed FIRST when zipping against --tag.")
     ap.add_argument("--rpc", type=Path, action="append", default=[],
-                    help="Path to a rocprof-compute output dir for per-CU plots.")
-    ap.add_argument("--tag", type=str, action="append", required=True)
+                    help="Path to a rocprof-compute output dir for per-CU plots. "
+                         "Consumed SECOND when zipping against --tag.")
+    ap.add_argument("--tag", type=str, action="append", required=True,
+                    help="One per input. Order must match --timeseries then --rpc.")
     ap.add_argument("--per-cu", action="store_true",
                     help="When using --rpc, draw per-CU distribution instead of timeseries.")
     ap.add_argument("--counter", type=str, action="append", default=None,

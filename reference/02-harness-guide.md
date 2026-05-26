@@ -108,9 +108,11 @@ Load the exact BF16/F32 bytes from a `.safetensors` file shipped with the worklo
 
 A header-only safetensors reader (no external deps) lives at [`../helpers/safetensors_loader.h`](../helpers/safetensors_loader.h). It parses the 8-byte header length + JSON header + raw tensor bytes — everything a safetensors file ships. Same reader works on AMD/NVIDIA/CPU because it never touches a GPU API.
 
+**To use it**, either (a) `cp "$SKILL/helpers/safetensors_loader.h" "$PROFILE_RUN_DIR/harness/"` so the header sits next to your `harness.hip` and a plain `#include "safetensors_loader.h"` resolves, or (b) leave it in place and add `-I"$SKILL/helpers"` to the hipcc command. The copy approach is preferred — it keeps the harness self-contained and survives the skill being moved or upgraded.
+
 Example:
 ```cpp
-#include "safetensors_loader.h"
+#include "safetensors_loader.h"   // header sits next to harness.hip (copy approach)
 
 SafetensorsFile st = SafetensorsFile::load("/path/to/workload.safetensors");
 const uint8_t* input_bytes = st.tensor_bytes("<input_tensor_name>");

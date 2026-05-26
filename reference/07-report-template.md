@@ -88,13 +88,16 @@ Minimal runnable command listing:
     ├── harness/...                         ← standalone harness
     ├── reports/
     │   ├── trace_<tag>/                    ← rocprofv3 kernel-trace (+ .db on ROCm 7+)
-    │   ├── rpc_<tag>/                      ← rocprof-compute profile dir
-    │   │   ├── pmc_perf.csv                ← merged PMCs, one row per (dispatch × PMC-group)
-    │   │   ├── pmc_kernel_top.csv          ← top-K kernels by dispatch count
-    │   │   ├── sysinfo.csv                 ← wide single-row sysinfo (NOT param/value)
-    │   │   ├── roofline.pdf                ← PDF when roofline ran (default-on; --no-roof to skip)
-    │   │   ├── profiling_config.yaml
-    │   │   └── out/pmc_<N>/<host>/<pid>_*.csv   ← raw per-PMC-group passes
+    │   ├── rpc_<tag>/                      ← rocprof-compute profile output root (the `-p` value)
+    │   │   └── <gpu_model>/                ← e.g. `MI300X/`; default `--subpath gpu` adds this child
+    │   │       ├── pmc_perf.csv            ← merged PMCs, one row per (dispatch × PMC-group)
+    │   │       ├── timestamps.csv          ← per-dispatch Start/End_Timestamp
+    │   │       ├── sysinfo.csv             ← wide single-row sysinfo (NOT param/value)
+    │   │       ├── roofline.csv            ← roofline benchmark results (when collected)
+    │   │       ├── empirRoof_gpu-0_*.pdf   ← roofline PDF plots (only with --roof-only / --kernel-names)
+    │   │       ├── log.txt
+    │   │       ├── profiling_config.yaml
+    │   │       └── out/pmc_<N>/<host>/<pid>_*.csv   ← raw per-PMC-group passes
     │   ├── rpc_ts_<tag>/                   ← optional `rocprofv3 -P` windowed PMC pass
     │   │   └── <pid>_counter_collection.csv ← one CSV per window; see Recipe 2b
     │   ├── pcsamp_<tag>/                   ← rocprofv3 PC sampling output
@@ -117,7 +120,7 @@ Minimal runnable command listing:
 
 | Metric | `<tag1>` | `<tag2>` | Source |
 |---|---:|---:|---|
-| **Duration** | X µs | Y µs | `kernel_trace.csv: End_Timestamp - Start_Timestamp` |
+| **Duration** | X µs | Y µs | `timestamps.csv: End_Timestamp - Start_Timestamp` (or rocprofv3 `kernel_trace.csv`) |
 | SoL — Compute (% peak) | X% | Y% | rocprof-compute SoL block (`-b 2`) |
 | SoL — HBM (% peak) | X% | Y% | rocprof-compute SoL block (`-b 2`) |
 | SoL — vL1 (TCP) | X% | Y% | rocprof-compute L1D block (`-b 15`) |
@@ -155,7 +158,7 @@ Minimal runnable command listing:
 <MFMA busy % from rocprof-compute compute-pipe block (`-b 10`); MFMA instruction counts from instruction-mix block (`-b 11`); instruction shape (16×16×16 BF16 / 32×32×8 / FP8 on CDNA3; F6F4 / XF32 on CDNA4), Accum_VGPR (AGPR) usage; or "0%, n/a — kernel is non-MFMA". Cite the actual per-dtype `SQ_INSTS_VALU_MFMA_MOPS_<DTYPE>` counters your install exposes (`rocprofv3 -L | grep MFMA`).>
 
 ### 2.5 CU timeline
-<shape: flat-high / flat-low / tail / sawtooth — reference the ASCII plot in `analysis/timeline_plots.txt` (single file per run, regardless of tag count). Note rocprof-compute timeseries minimum interval is ~1 ms vs NVIDIA PM ~2 µs, so very-short kernels need ATT instead>
+<shape: flat-high / flat-low / tail / sawtooth — reference the ASCII plot in `analysis/timeline_plots_<tag_suffix>.txt` (one file per `plot_timeline.py` invocation; the suffix is the joined `--tag` values, so a single 2-tag invocation produces `timeline_plots_<tag1>_<tag2>.txt`). Note `rocprofv3 -P` windowed-PMC granularity is ~1 ms — very-short kernels need ATT instead>
 
 ### 2.6 Memory access pattern
 <Bytes per wavefront from rocprof-compute instruction-mix / L1D block (`-b 11` / `-b 15`) — peak 256 B for a coalesced wave64 dword load, 1024 B for `global_load_dwordx4`; vL1 / L2 / HBM hit rates; HBM read pressure from `TCC_EA0_RDREQ_*` (single EA channel per XCD on gfx942/gfx950 — `TCC_EA1_*` does NOT exist); scratch traffic (= register spill, on AMD scratch lives in HBM); LDS bank conflicts (`SQ_LDS_BANK_CONFLICT`)>

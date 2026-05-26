@@ -171,7 +171,10 @@ python3 -c "import rocpd; print('OK')"
 If still broken, fall back to plain `sqlite3` — the `.db` file uses the open `rocpd` schema and you don't need the helper:
 ```python
 import sqlite3, pandas as pd
-con = sqlite3.connect("trace_<tag>/<run>.db")
+from pathlib import Path
+# rocprofv3 names this `<pid>_results.db` — glob since PID varies per run
+db_path = next(Path("trace_<tag>").glob("*_results.db"))
+con = sqlite3.connect(db_path)
 print(pd.read_sql("SELECT name FROM sqlite_master WHERE type='table'", con))
 ```
 

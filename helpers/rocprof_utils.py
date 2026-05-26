@@ -1,13 +1,17 @@
 """Shared helpers for parsing rocprofv3 / rocprof-compute outputs.
 
 Designed to work with both:
-  - rocprof-compute (ROCm 6.3+): writes a directory under the `-p` path with
-    a merged `pmc_perf.csv`, `pmc_kernel_top.csv`, `sysinfo.csv` (wide
-    single-row format, NOT param/value), `roofline.pdf` (PDF when roofline
-    ran; default-on, suppress with `--no-roof`), and `profiling_config.yaml`,
-    plus raw per-PMC-group CSVs under `out/pmc_<N>/<hostname>/<pid>_*.csv`.
-    There is NO `timestamps.csv` — kernel timing lives in the rocprofv3
-    `kernel_trace.csv` of a separate `--kernel-trace` collection.
+  - rocprof-compute (ROCm 6.3+): writes a workload directory NESTED under
+    `<-p>/<gpu_model>/` (default `--subpath gpu`, e.g. `rpc_<tag>/MI300X/`),
+    containing a merged `pmc_perf.csv`, `timestamps.csv` (per-dispatch
+    Start/End_Timestamp), `sysinfo.csv` (wide single-row format, NOT
+    param/value), `roofline.csv` (when roofline ran; default-on, suppress
+    with `--no-roof`), `empirRoof_gpu-0_<datatypes>.pdf` PDF plots (only
+    with `--roof-only` / `--kernel-names`), `log.txt`, and
+    `profiling_config.yaml`, plus raw per-PMC-group CSVs under
+    `out/pmc_<N>/<hostname>/<pid>_*.csv`.
+    `load_rpc_dir` accepts the `-p` value and auto-resolves the
+    `<gpu_model>/` child via glob.
   - ROCm 7.x: rocprofv3 defaults to a single `.db` per run using the
     rocpd schema (the optional `rocpd` Python helper, or plain sqlite3).
 
@@ -37,31 +41,54 @@ except ImportError as e:  # pragma: no cover
 
 # --- Loading rocprof-compute output dirs ------------------------------------
 
+def _resolve_workload_dir(rpc_dir: Path) -> Path:
+    """Resolve the directory that actually contains pmc_perf.csv.
+
+    rocprof-compute's default `--subpath gpu` nests the workload under a
+    `<gpu_model>/` child (e.g. `rpc_<tag>/MI300X/`). Callers pass us the
+    `-p` value (`rpc_<tag>`); we glob one level down to find the real
+    workload dir. If no nested match, we fall back to the input dir —
+    this preserves backward compat with flat layouts (e.g. someone using
+    `--subpath node_name` and a custom layout).
+    """
+    if (rpc_dir / "pmc_perf.csv").exists():
+        return rpc_dir
+    hits = sorted(rpc_dir.glob("*/pmc_perf.csv"))
+    if hits:
+        return hits[0].parent
+    return rpc_dir
+
+
 def load_rpc_dir(rpc_dir, kernel_regex=None, kernel_trace_csv=None):
     """Load the standard rocprof-compute output tree into a dict of DataFrames.
 
     Args:
-        rpc_dir: path to a rocprof-compute profile directory (the `-p` arg).
+        rpc_dir: path to a rocprof-compute profile output (the `-p` arg).
+            May be the `-p` value directly or its `<gpu_model>/` child — we
+            glob-resolve either way.
         kernel_regex: if given, filter pmc CSVs to dispatches whose
-            Kernel_Name matches this regex. Filtering uses pmc_perf.csv's
-            own `Kernel_Name` column (there is no `timestamps.csv`).
+            Kernel_Name matches this regex (column lives in pmc_perf.csv).
         kernel_trace_csv: optional path to a rocprofv3 `kernel_trace.csv`
             produced by a separate `--kernel-trace` run; loaded into
-            out['kernel_trace'] for timing reference (Start_Timestamp /
-            End_Timestamp live there, NOT in pmc_perf.csv).
+            out['kernel_trace']. rocprof-compute itself emits per-dispatch
+            timestamps via the sibling `timestamps.csv`, which we load
+            into out['timestamps'] automatically when present.
 
     Returns:
         dict with keys:
             'pmc'           — DataFrame from pmc_perf.csv (all counters)
             'sysinfo'       — DataFrame from sysinfo.csv (wide single-row format)
+            'timestamps'    — DataFrame from rocprof-compute's timestamps.csv (if present)
             'kernel_trace'  — DataFrame from the supplied kernel_trace.csv, if any
-            'rpc_dir'       — original path
+            'rpc_dir'       — original input path (pre-resolve)
+            'workload_dir'  — resolved dir actually containing pmc_perf.csv
     """
-    rpc = Path(rpc_dir)
-    if not rpc.is_dir():
-        raise FileNotFoundError(f"rocprof-compute dir not found: {rpc}")
+    rpc_input = Path(rpc_dir)
+    if not rpc_input.is_dir():
+        raise FileNotFoundError(f"rocprof-compute dir not found: {rpc_input}")
+    rpc = _resolve_workload_dir(rpc_input)
 
-    out = {"rpc_dir": rpc}
+    out = {"rpc_dir": rpc_input, "workload_dir": rpc}
 
     pmc_path = rpc / "pmc_perf.csv"
     if pmc_path.exists():
@@ -77,6 +104,16 @@ def load_rpc_dir(rpc_dir, kernel_regex=None, kernel_trace_csv=None):
 
     sys_path = rpc / "sysinfo.csv"
     out["sysinfo"] = pd.read_csv(sys_path) if sys_path.exists() else pd.DataFrame()
+
+    ts_path = rpc / "timestamps.csv"
+    if ts_path.exists():
+        ts = pd.read_csv(ts_path)
+        if kernel_regex is not None and "Kernel_Name" in ts.columns:
+            ts = ts[ts["Kernel_Name"].astype(str).str.contains(
+                kernel_regex, regex=True)].copy()
+        out["timestamps"] = ts
+    else:
+        out["timestamps"] = pd.DataFrame()
 
     if kernel_trace_csv is not None:
         ktp = Path(kernel_trace_csv)
@@ -127,7 +164,7 @@ def first_present(df, *names, default=None):
 
 def enumerate_counters(rpc_dir):
     """Return the set of all column names in pmc_perf.csv."""
-    rpc = Path(rpc_dir)
+    rpc = _resolve_workload_dir(Path(rpc_dir))
     seen = set()
     pmc = rpc / "pmc_perf.csv"
     if pmc.exists():
@@ -143,12 +180,15 @@ def enumerate_counters(rpc_dir):
 def kernel_duration_ns(rpc):
     """Total duration across selected dispatches, in nanoseconds.
 
-    Reads from a rocprofv3 `kernel_trace.csv` loaded into rpc['kernel_trace']
-    (pmc_perf.csv on current rocprof-compute does NOT carry per-dispatch
-    Start_Timestamp / End_Timestamp columns).
+    Prefers rocprof-compute's `timestamps.csv` (loaded into rpc['timestamps']
+    by `load_rpc_dir`) when present, else falls back to a rocprofv3
+    `kernel_trace.csv` loaded into rpc['kernel_trace']. pmc_perf.csv itself
+    does NOT carry per-dispatch Start_Timestamp / End_Timestamp columns.
     """
     if isinstance(rpc, dict):
-        ts = rpc.get("kernel_trace")
+        ts = rpc.get("timestamps")
+        if ts is None or getattr(ts, "empty", True):
+            ts = rpc.get("kernel_trace")
     else:
         ts = rpc
     if ts is None or getattr(ts, "empty", True):

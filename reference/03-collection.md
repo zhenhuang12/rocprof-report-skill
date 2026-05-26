@@ -70,14 +70,14 @@ rocprof-compute profile \
     -- ./harness [args]
 ```
 
-> **Roofline is ON by default** in current rocprof-compute (7.x). Pass `--no-roof` to skip the empirical roofline benchmarks; pass `--roof-only` to run them without the regular PMC pass. **There is no `--roofline` flag** — invoking it crashes. `--no-roof` cannot be combined with `--set` or `--roof-only` (per-help), but `--no-roof` *is* compatible with `-b`.
+> **Roofline is ON by default** in current rocprof-compute (7.x). Pass `--no-roof` to skip the empirical roofline benchmarks; pass `--roof-only` to run them without the regular PMC pass. **There is no `--roofline` flag** — invoking it crashes. Don't combine `--no-roof` with `--roof-only` (one suppresses what the other runs); `--no-roof` *is* compatible with `-b` and `-k`.
 
 | Flag | Meaning |
 |---|---|
-| `-n` / `--name` | Workload name used in report titles (and, only when `-p` is **omitted**, in the default output path). |
+| `-n` / `--name` | Workload name used in report titles and folded into the output path (see `-p` below). |
 | `--no-roof` | Skip the empirical roofline benchmarks (otherwise they run by default and add ~30 s). |
 | `-k` / `--kernel` | Filter on demangled kernel names (substring, accepts multiple values). Limits the kernels measured per PMC group. (Note: the flag is `--kernel`, not `--kernel-name`.) |
-| `-p` / `--path` | Output directory. When you pass `-p`, rocprof-compute writes **flat** under that directory: `pmc_perf.csv`, `sysinfo.csv`, `log.txt`, `profiling_config.yaml`, plus a `perfmon/<group>.{txt,yaml}` subdir and an `out/pmc_<N>/<hostname>/<pid>_{kernel_trace,counter_collection,agent_info}.csv` raw-per-pass subdir. There is no `timestamps.csv` and no top-level `roofline.csv` (when roofline runs, the artifact is a PDF). When `-p` is omitted, output defaults to `<cwd>/workloads/<name>/`. |
+| `-p` / `--path` | Output root. rocprof-compute does **not** write flat under `-p` — by default `--subpath` is `gpu`, so the actual workload lands at `<-p>/<gpu_model>/` (e.g. `rpc_<tag>/MI300X/pmc_perf.csv`). When `-p` is omitted, output defaults to `<cwd>/workloads/<name>/<gpu_model>/`. Artifacts under that workload dir: `pmc_perf.csv`, `timestamps.csv`, `sysinfo.csv`, `log.txt`, `roofline.csv` (when roofline ran), PDF plots named `empirRoof_gpu-0_<datatypes>.pdf` (only with `--roof-only` or `--kernel-names`), `profiling_config.yaml`, plus `perfmon/<group>.{txt,yaml}` and `out/pmc_<N>/<hostname>/<pid>_{kernel_trace,counter_collection,agent_info}.csv` raw-per-pass subdirs. **The helpers in `$SKILL/helpers/` auto-resolve the nested `<gpu_model>/` child** — just pass them the `-p` value you used here. To force a flat layout instead, pass `--subpath node_name` (output then lands at `<-p>/<hostname>/`) — but then you must update the helper-facing paths to match. |
 | `-b` / `--block` | Filter to specific metric IDs (e.g. `12.1.1`), block IDs (e.g. `12`), or block aliases (e.g. `lds`, `l1i`, `sl1d`). |
 
 Replay count: ~15-30 passes (one per PMC group; rocprofv3 replays the whole binary, not just the kernel). Wall time: kernel time × number of groups + init.

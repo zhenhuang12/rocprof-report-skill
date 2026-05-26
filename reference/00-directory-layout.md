@@ -73,13 +73,16 @@ profile/<run_name>/
 ├── reports/
 │   ├── trace_<tag1>/               ← rocprofv3 kernel-trace output dir (.csv / .json / .pftrace / .db)
 │   ├── trace_<tag2>/
-│   ├── rpc_<tag1>/                 ← rocprof-compute "profile" output dir
-│   │   ├── pmc_perf.csv            ← merged PMCs (one row per dispatch × PMC group)
-│   │   ├── pmc_kernel_top.csv      ← top-K kernels by dispatch count
-│   │   ├── sysinfo.csv             ← wide single-row sysinfo (NOT param/value)
-│   │   ├── roofline.pdf            ← PDF when roofline ran (default-on; --no-roof to skip)
-│   │   ├── profiling_config.yaml
-│   │   └── out/pmc_<N>/<host>/<pid>_*.csv   ← raw per-PMC-group passes
+│   ├── rpc_<tag1>/                 ← rocprof-compute "profile" output root (the `-p` value)
+│   │   └── <gpu_model>/            ← e.g. `MI300X/`, `MI355X/`; default `--subpath gpu` adds this child
+│   │       ├── pmc_perf.csv        ← merged PMCs (one row per dispatch × PMC group)
+│   │       ├── timestamps.csv      ← per-dispatch Start/End_Timestamp (rocprof-compute *does* emit this)
+│   │       ├── sysinfo.csv         ← wide single-row sysinfo (NOT param/value)
+│   │       ├── roofline.csv        ← roofline benchmark results (when roofline ran; default-on, --no-roof to skip)
+│   │       ├── empirRoof_gpu-0_*.pdf  ← roofline PDF plots (only with --roof-only or --kernel-names)
+│   │       ├── log.txt             ← collection log
+│   │       ├── profiling_config.yaml
+│   │       └── out/pmc_<N>/<host>/<pid>_*.csv   ← raw per-PMC-group passes
 │   ├── rpc_<tag2>/
 │   ├── rpc_ts_<tag1>/              ← (optional) `rocprofv3 -P` windowed output for timeline view
 │   │   └── <pid>_counter_collection.csv  ← one CSV per window; plot_timeline.py --per-cu
@@ -87,7 +90,9 @@ profile/<run_name>/
 │   ├── att_<tag1>/                 ← rocprofv3 --att output dir (JSON traces per CU)
 │   ├── att_<tag2>/
 │   ├── pcsamp_<tag1>/              ← rocprofv3 --pc-sampling output dir (CSV per kernel)
-│   └── pcsamp_<tag2>/
+│   ├── pcsamp_<tag2>/
+│   ├── pmc_<tag1>/                 ← (optional) targeted `rocprofv3 --pmc ...` output dir (Recipe 4)
+│   └── pmc_<tag2>/                 ←   contains `<pid>_counter_collection.csv` (no rocprof-compute wrapping)
 └── analysis/                       ← only the OUTPUT artifacts live here;
     │                                  invoke the helpers from $SKILL/helpers/
     │                                  with --run-dir, do NOT copy them in.
@@ -105,7 +110,7 @@ Notes:
 - `<tag>` is the per-workload / per-dispatch-path label, e.g. `path_a_shapeA`, `path_b_shapeB`. Pick tags that are short and name the representative workload, not the file UUID.
 - If you profile only one tag, you can omit the tag suffix from filenames. But as soon as you profile a second, backfill the tag to avoid ambiguity.
 - **Do not copy the helper scripts per-run.** Invoke them from `$SKILL/helpers/` (where `$SKILL` points at the installed skill root) and pass `--run-dir $PROFILE_RUN_DIR`. The scripts are stateless w.r.t. the script path; only the data under `analysis/` is per-run. If you genuinely need an archival snapshot of the helper code, copy it once at promotion time, not on every run.
-- **rocprof-compute writes a partly flat directory.** The merged `pmc_perf.csv`, `pmc_kernel_top.csv`, `sysinfo.csv`, `roofline.pdf`, and `profiling_config.yaml` land directly under `<path>/`; the raw per-PMC-group CSVs land under `<path>/out/pmc_<N>/<hostname>/<pid>_*.csv`. When `-p <path>` is passed, this is rooted at `<path>/`; when omitted, output defaults to `./workloads/<name>/` (no `<gpu_model>` subdir on current rocprof-compute). Keep the whole tree — the helpers and the GUI walk it together.
+- **rocprof-compute nests its workload artifacts under a `<gpu_model>/` child.** Default `--subpath gpu` places `pmc_perf.csv`, `timestamps.csv`, `sysinfo.csv`, `roofline.csv` (when collected), `empirRoof_gpu-0_*.pdf` (only with `--roof-only` / `--kernel-names`), `log.txt`, and `profiling_config.yaml` under `<path>/<gpu_model>/` — e.g. `rpc_<tag>/MI300X/pmc_perf.csv`. The raw per-PMC-group CSVs land under `<path>/<gpu_model>/out/pmc_<N>/<hostname>/<pid>_*.csv`. When `-p <path>` is omitted, output defaults to `./workloads/<name>/<gpu_model>/`. The helpers in `$SKILL/helpers/` accept the `-p` value (the parent of `<gpu_model>/`) and auto-resolve the nested child via glob — you do not need to descend into it manually. Keep the whole tree.
 - **rocprofv3** in ROCm 7+ defaults to a SQLite `.db` (the `rocpd` schema) plus CSVs. In ROCm 6.x it defaulted to CSVs only. Keep whatever rocprofv3 produced — pandas + sqlite3 handle both.
 
 ---

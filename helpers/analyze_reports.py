@@ -118,6 +118,9 @@ def collect(rpc_dir: Path, tag: str, analysis_dir: Path, kernel_regex, arch,
         analysis_dir / f"metrics_key_{tag}.txt",
     )
     print(f"  -> metrics_key_{tag}.{{json,txt}}")
+    # Stash the resolved arch so compare() can pick up gfx950-specific counters
+    # (e.g. _F6F4) without the user having to pass --arch a second time.
+    key["__arch__"] = arch_used
     return key
 
 
@@ -125,7 +128,27 @@ def compare(collected: dict, analysis_dir: Path, arch):
     tags = list(collected.keys())
     if len(tags) < 2:
         return
-    keys = key_counters_for_arch(arch or "gfx942")
+    # If --arch isn't set on the CLI, trust the per-tag arch the collect step
+    # already resolved (sysinfo-detected or CLI override) so that an MI355X
+    # run picks up gfx950-specific counters (e.g. _F6F4) in the compare output.
+    if arch:
+        keys_arch = arch
+    else:
+        per_tag_archs = {collected[t].get("__arch__") for t in tags}
+        per_tag_archs.discard(None)
+        if len(per_tag_archs) == 1:
+            keys_arch = next(iter(per_tag_archs))
+        else:
+            # Mixed or unknown — prefer gfx950 (superset) so we don't silently
+            # drop CDNA4-only counters; warn so the user notices.
+            keys_arch = "gfx950" if "gfx950" in per_tag_archs else "gfx942"
+            if len(per_tag_archs) > 1:
+                print(
+                    f"[warn] mixed-arch compare across {sorted(per_tag_archs)}; "
+                    f"using {keys_arch} key-counter list (pass --arch to override).",
+                    file=sys.stderr,
+                )
+    keys = key_counters_for_arch(keys_arch)
     safe_tags = [_safe_tag(t) for t in tags]
     if len(safe_tags) <= 2:
         out_name = f"compare_{'_vs_'.join(safe_tags)}.txt"

@@ -245,8 +245,9 @@ LDS bank-conflict stalls surface in two places: aggregate cycles via the PMC `SQ
 **Counters (rocprof-compute compute-pipe block, `-b 10`, formerly §2.1.10):**
 
 > MFMA per-dtype counters are named `SQ_INSTS_VALU_MFMA_MOPS_<DTYPE>` on gfx942 / gfx950
-> ("MOPS" = matrix-ops). The canonical `<DTYPE>` set is `F16, BF16, F32, F64, I8, F8, BF8, XF32`
-> on **both** gfx942 and gfx950; gfx950 adds `F6F4` (covers MXFP4/MXFP6 traffic — there is no
+> ("MOPS" = matrix-ops). The canonical `<DTYPE>` set is `F16, BF16, F32, F64, I8, F8, XF32`
+> on **both** gfx942 and gfx950 (E5M2/BF8 inputs are bucketed under `_F8` — there is **no**
+> dedicated `_BF8` PMC); gfx950 adds `F6F4` (covers MXFP4/MXFP6 traffic — there is no
 > separate MXFP4 or MXFP6 PMC suffix). See [`reference/08-mi300x-mi355x-counter-names.md`](08-mi300x-mi355x-counter-names.md)
 > for the authoritative list. Always verify against `rocprofv3 -L | grep MFMA` on your install.
 > The aggregate `SQ_INSTS_MFMA` is always available.
@@ -257,9 +258,10 @@ SQ_INSTS_VALU                          # total VALU instruction count
 SQ_INSTS_VALU_MFMA_MOPS_F16            # per-dtype MFMA MOPs (when exposed by ROCm)
 SQ_INSTS_VALU_MFMA_MOPS_BF16
 SQ_INSTS_VALU_MFMA_MOPS_F32
-SQ_INSTS_VALU_MFMA_MOPS_F64            # CDNA3 (gfx942)
+SQ_INSTS_VALU_MFMA_MOPS_F64            # both gfx942 & gfx950; CDNA3 full throughput, CDNA4 halved
 SQ_INSTS_VALU_MFMA_MOPS_I8
-SQ_INSTS_VALU_MFMA_MOPS_F8             # CDNA3 (OCP-FNUZ) / CDNA4 (OCP standard FP8)
+SQ_INSTS_VALU_MFMA_MOPS_F8             # CDNA3 (OCP-FNUZ) / CDNA4 (OCP standard FP8); E5M2/BF8 rolls up here too
+SQ_INSTS_VALU_MFMA_MOPS_XF32           # both gfx942 & gfx950 (AMD's TF32 analog)
 # Block-scaled MX formats (FP4/FP6) are CDNA4 (gfx950) only — name suffix is install-specific
 SQ_BUSY_CYCLES
 GRBM_GUI_ACTIVE                        # for normalizing to total time
