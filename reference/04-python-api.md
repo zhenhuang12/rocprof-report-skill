@@ -218,7 +218,7 @@ with rocpd.open("path/to/file.db") as db:
 
 Most rocprof outputs are plain numeric CSV. One edge case:
 
-1. Some counter columns are **already aggregated** (e.g., `..._sum` is sum across all CUs / channels; `..._avg` is average). Don't sum again. Convention is in the suffix. Use the unsuffixed name only when summing yourself across channels (e.g., grouping `TCC_EA0_RDREQ` by `Dispatch_ID` if rocprof-compute exposed it that way on your build).
+1. Some counter columns are **already aggregated** (e.g., `..._sum` is sum across all CUs / channels; `..._avr` is per-instance average; `..._max` is per-instance max). Don't sum again. Convention is in the suffix — see `reference/08-mi300x-mi355x-counter-names.md` for the canonical `_sum` / `_avr` / `_max` definitions. Use the unsuffixed name only when summing yourself across channels (e.g., grouping `TCC_EA0_RDREQ` by `Dispatch_ID` if rocprof-compute exposed it that way on your build).
 
 ---
 

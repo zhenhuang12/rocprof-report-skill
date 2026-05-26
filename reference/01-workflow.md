@@ -9,8 +9,8 @@ This is the complete checklist from "user asks to profile" to "final report". Ev
 **Always start here.** See [`00-directory-layout.md`](00-directory-layout.md) for the full convention.
 
 ```bash
-# At the repo root
-PROFILE_RUN_DIR=profile/<descriptive_run_name>        # e.g. <kernel>_v1_baseline
+# At the repo root. Use an absolute path so the var survives subshells / cd-ing.
+export PROFILE_RUN_DIR="$PWD/profile/<descriptive_run_name>"        # e.g. <kernel>_v1_baseline
 mkdir -p "$PROFILE_RUN_DIR"/{harness,reports,analysis}
 ```
 

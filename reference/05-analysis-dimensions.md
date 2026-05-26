@@ -93,7 +93,8 @@ last_wave_utilization_pct = last_wave_blocks / wkgs_in_flight * 100
 SQ_BUSY_CYCLES (per CU)
 GRBM_GUI_ACTIVE                       # global active cycles
 GRBM_CP_BUSY                          # cmd-processor busy
-GRBM_SPI_BUSY                         # shader-pipe input busy (workgroup scheduling)
+# (SPI scheduling busy is exposed via the SPI block, not GRBM, on gfx942/gfx950 —
+# `rocprofv3 -L | grep SPI_` to enumerate per-install)
 
 # Timeseries (rocprof-compute --timeseries-sampling-rate)
 SQ_WAVES                              # rises with workgroup dispatch, falls with completion

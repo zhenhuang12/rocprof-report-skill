@@ -40,15 +40,15 @@ For MI355X (gfx950), use `--offload-arch=gfx950` and ROCm 7+.
 
 ```bash
 export PROFILE_RUN_DIR=profile/<run_name>
-HELPERS=/path/to/skills/rocprof-report-skill/helpers
-export FIB_DATASET_PATH=/path/to/flashinfer-trace  # if using FIB workloads
+export SKILL=~/.claude/skills/rocprof-report-skill   # or wherever the skill is installed
+export FIB_DATASET_PATH=/path/to/flashinfer-trace    # if using FIB workloads
 
 # (Optional) Browse workload shapes for a flashinfer-trace dataset
-python3 $HELPERS/list_flashinfer_workloads.py --definition <def_name>
-python3 $HELPERS/list_flashinfer_workloads.py --definition <def_name> --unique-axes <axis1>,<axis2> --no-paths
+python3 $SKILL/helpers/list_flashinfer_workloads.py --definition <def_name>
+python3 $SKILL/helpers/list_flashinfer_workloads.py --definition <def_name> --unique-axes <axis1>,<axis2> --no-paths
 
 # Extract key counters for each rocprof-compute report
-python3 $HELPERS/analyze_reports.py --run-dir $PROFILE_RUN_DIR \
+python3 $SKILL/helpers/analyze_reports.py --run-dir $PROFILE_RUN_DIR \
     --rpc $PROFILE_RUN_DIR/reports/rpc_<tag1> --tag <tag1> \
     --rpc $PROFILE_RUN_DIR/reports/rpc_<tag2> --tag <tag2> \
     --kernel "my_kernel_regex" --arch gfx942
@@ -57,20 +57,20 @@ python3 $HELPERS/analyze_reports.py --run-dir $PROFILE_RUN_DIR \
 # rocprofv3 nested layout (pcsamp_<tag>/pmc_1/<host>/<pid>_pc_sampling_*.csv)
 # so you don't have to know the host or PID. Use --pcsamp <file> only when you
 # need to pin a specific CSV.
-python3 $HELPERS/extract_stall_hotspots.py --run-dir $PROFILE_RUN_DIR \
+python3 $SKILL/helpers/extract_stall_hotspots.py --run-dir $PROFILE_RUN_DIR \
     --pcsamp-dir $PROFILE_RUN_DIR/reports/pcsamp_<tag1> --tag <tag1> \
     --pcsamp-dir $PROFILE_RUN_DIR/reports/pcsamp_<tag2> --tag <tag2>
 
 # Or ATT-based hotspots
-python3 $HELPERS/extract_stall_hotspots.py --run-dir $PROFILE_RUN_DIR \
+python3 $SKILL/helpers/extract_stall_hotspots.py --run-dir $PROFILE_RUN_DIR \
     --att-dir $PROFILE_RUN_DIR/reports/att_<tag> --tag <tag>
 
 # ASCII timeline plots — needs --timeseries-sampling-rate at collection time
-python3 $HELPERS/plot_timeline.py --run-dir $PROFILE_RUN_DIR \
+python3 $SKILL/helpers/plot_timeline.py --run-dir $PROFILE_RUN_DIR \
     --timeseries $PROFILE_RUN_DIR/reports/rpc_ts_<tag>/pmc_perf_timeseries.csv --tag <tag>
 
 # Per-CU distribution (no timeseries needed)
-python3 $HELPERS/plot_timeline.py --run-dir $PROFILE_RUN_DIR \
+python3 $SKILL/helpers/plot_timeline.py --run-dir $PROFILE_RUN_DIR \
     --rpc $PROFILE_RUN_DIR/reports/rpc_<tag> --tag <tag> --per-cu
 ```
 
