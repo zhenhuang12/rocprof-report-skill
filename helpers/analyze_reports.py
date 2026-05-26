@@ -50,12 +50,15 @@ _safe_tag = safe_tag
 
 def _resolve_kernel_trace(rpc_dir: Path, tag: str, explicit: Path | None) -> Path | None:
     """Find a kernel_trace.csv for this tag. Explicit --kernel-trace wins; else
-    look for sibling `reports/trace_<tag>/**/kernel_trace.csv` next to rpc_dir.
+    look for sibling `reports/trace_<tag>/**/*_kernel_trace.csv` next to rpc_dir.
 
-    rocprofv3 writes kernel_trace under a nested
-    `<out>/out/pmc_<N>/<hostname>/<pid>_kernel_trace.csv` path when invoked via
-    rocprof-compute, and `kernel_trace.csv` at the top level when invoked as
-    `rocprofv3 --kernel-trace -d <out>`. Glob both.
+    rocprofv3 always emits a name prefix — either the default
+    `<hostname>/<pid>_kernel_trace.csv` nested layout, or the flat
+    `<prefix>_kernel_trace.csv` form when invoked with
+    `rocprofv3 --kernel-trace -d <out> --output-file <prefix>`. When wrapped
+    inside rocprof-compute the raw layer adds a further
+    `<out>/out/pmc_<N>/<hostname>/<pid>_kernel_trace.csv` depth. The
+    `*_kernel_trace.csv` glob below covers all three.
 
     The caller may pass either the `-p` value (e.g. `reports/rpc_<tag>`) or an
     opt-in nested workload dir (e.g. `reports/rpc_<tag>/MI300X`). To find the

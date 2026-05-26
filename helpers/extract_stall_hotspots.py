@@ -267,21 +267,19 @@ def _resolve_pcsamp_dir(d):
         `<pcsamp_dir>/<hostname>/<pid>_pc_sampling_host_trap.csv`.
     Passing `--output-file <prefix>` collapses that to a flat
         `<pcsamp_dir>/<prefix>_pc_sampling_*.csv`.
-    A potential third layout — `out/pmc_<N>/<hostname>/...` from a future
-    rocprof-compute wrapper — is also accepted defensively (current
-    rocprof-compute has no PC-sampling subcommand). We rglob and accept all
-    three so this script keeps working across rocprofv3 versions and
-    invocation styles.
+    Both forms carry a `<pid>_` / `<prefix>_` underscore prefix — rocprofv3
+    does NOT emit a bare `pc_sampling_*.csv`. We rglob with the underscore-
+    prefix glob to catch both layouts regardless of depth.
 
     When both stochastic and host_trap CSVs are present, we prefer **stochastic**
     — it's the only mode that emits the `Stall_Reason` column needed for a true
     wait-reason breakdown. Caller can pass --pcsamp directly to override.
     """
     base = Path(d)
-    # Flat layout first (current rocprofv3), then nested fallback.
+    # Flat layout (--output-file <prefix>) plus nested default-layout
+    # (<hostname>/<pid>_*) covered by a single rglob.
     matches = sorted(base.glob("*_pc_sampling_*.csv"))
     matches += sorted(base.rglob("*_pc_sampling_*.csv"))
-    matches += sorted(base.rglob("pc_sampling_*.csv"))
     # De-dup while preserving order.
     seen = set()
     matches = [m for m in matches if not (m in seen or seen.add(m))]

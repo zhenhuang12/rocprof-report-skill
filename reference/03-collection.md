@@ -297,11 +297,12 @@ RUN = os.environ["PROFILE_RUN_DIR"]
 # a filename prefix, not a directory), so rglob the trace dir rather than
 # guessing the hostname.
 def _load_trace(tag):
+    # rocprofv3 always emits a name prefix: default `<hostname>/<pid>_kernel_trace.csv`
+    # or flat `<prefix>_kernel_trace.csv` with `--output-file <prefix>`. The
+    # single rglob below covers both — no bare-filename form exists.
     paths = sorted(Path(f"{RUN}/reports/trace_{tag}").rglob("*_kernel_trace.csv"))
-    if not paths:  # standalone `rocprofv3 --kernel-trace` form has no PID prefix
-        paths = sorted(Path(f"{RUN}/reports/trace_{tag}").rglob("kernel_trace.csv"))
     if not paths:
-        raise FileNotFoundError(f"no kernel_trace.csv under {RUN}/reports/trace_{tag}")
+        raise FileNotFoundError(f"no *_kernel_trace.csv under {RUN}/reports/trace_{tag}")
     return pd.concat([pd.read_csv(p) for p in paths], ignore_index=True)
 
 d1, d2 = _load_trace("v1"), _load_trace("v2")
