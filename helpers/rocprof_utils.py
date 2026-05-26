@@ -164,7 +164,8 @@ def kernel_duration_ns(rpc):
 # given gfx target with ROCm 6.4 / 7.x. For a fuller list and rationale see
 # ../reference/08-mi300x-mi355x-counter-names.md. Other gfx targets and future
 # ROCm releases may need alternate names — always verify with
-# `enumerate_counters(rpc_dir)` or `rocprofv3 -L` (a.k.a. `--list-avail`).
+# `enumerate_counters(rpc_dir)` or `rocprofv3 -L` (long form
+# `--list-supported-counters`; the older `--list-avail` is rocprof v1).
 
 _COMMON_GEOMETRY = [
     # pmc_perf.csv per-dispatch columns (not strictly PMCs but useful).
@@ -240,7 +241,8 @@ _COMMON_GRBM = [
 # the exact spelling shifts between gfx942 and gfx950. Always confirm with
 # `rocprofv3 -L | grep -i mfma` before extending these lists.
 #
-# CDNA3 (gfx942 / MI300X / MI300A) — FNUZ FP8 plus the integer / float dtypes.
+# CDNA3 (gfx942 / MI300X / MI300A). VERIFIED via `rocprofv3 -L | grep MFMA`
+# on gfx942: F16, BF16, F32, F64, I8, F8 (FNUZ), BF8, XF32 (TF32-equivalent).
 MI300X_MFMA = [
     "SQ_INSTS_MFMA",                            # aggregate MFMA op count
     "SQ_INSTS_VALU_MFMA_MOPS_F16",
@@ -248,15 +250,15 @@ MI300X_MFMA = [
     "SQ_INSTS_VALU_MFMA_MOPS_F32",
     "SQ_INSTS_VALU_MFMA_MOPS_F64",
     "SQ_INSTS_VALU_MFMA_MOPS_I8",
-    "SQ_INSTS_VALU_MFMA_MOPS_F8",               # FNUZ on CDNA3
+    "SQ_INSTS_VALU_MFMA_MOPS_F8",               # FNUZ on CDNA3, OCP standard on CDNA4
+    "SQ_INSTS_VALU_MFMA_MOPS_BF8",              # BF8/E5M2 inputs (paired with F8 in mixed_f8_bf8)
+    "SQ_INSTS_VALU_MFMA_MOPS_XF32",             # XF32 = TF32-equivalent; present on BOTH gfx942 and gfx950
 ]
 
-# CDNA4 (gfx950 / MI355X) — adds OCP standard FP8 + the block-scaled F6F4
-# family and extended-FP32 (XF32). VERIFIED via `rocprofv3 -L | grep MFMA`
-# on gfx950: F16, BF16, F32, F64, I8, F8, XF32, F6F4. No separate _F4 / _F6
-# / _MXFP4 / _MXFP6 / _MXFP8 PMCs exist — they roll up into _F6F4.
+# CDNA4 (gfx950 / MI355X) — adds only the block-scaled F6F4 family on top of
+# the gfx942 set. No separate _F4 / _F6 / _MXFP4 / _MXFP6 / _MXFP8 PMCs exist
+# — they roll up into _F6F4.
 MI355X_MFMA = MI300X_MFMA + [
-    "SQ_INSTS_VALU_MFMA_MOPS_XF32",
     "SQ_INSTS_VALU_MFMA_MOPS_F6F4",
 ]
 

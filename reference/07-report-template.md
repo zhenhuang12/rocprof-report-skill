@@ -196,7 +196,8 @@ Minimal runnable command listing:
 ## 6. Reproduction
 
     cd /abs/path/to/repo
-    export PROFILE_RUN_DIR=profile/<run_name>
+    export PROFILE_RUN_DIR="$PWD/profile/<run_name>"
+    export SKILL=~/.claude/skills/rocprof-report-skill
     <one-block runnable script that builds the harness, runs rocprofv3 + rocprof-compute, and parses>
 ```
 

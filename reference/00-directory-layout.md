@@ -144,7 +144,6 @@ The comparison run does not re-profile; it only produces comparison artifacts an
 Add a simple `.gitignore` inside `profile/` if you want to keep the run dirs out of git:
 ```
 profile/*/
-!profile/README.md
 ```
 
 Or, if you want a few canonical runs tracked in git, `.gitignore` only the data-heavy subdirs:
@@ -167,7 +166,8 @@ export SKILL=~/.claude/skills/rocprof-report-skill   # or wherever the skill is 
 mkdir -p "$PROFILE_RUN_DIR"/{harness,reports,analysis}
 
 # build harness (MI300X gfx942; add --offload-arch=gfx950 for MI355X).
-# `-DHARNESS_FILLED_IN=1` clears the template's #error guard.
+# `-DHARNESS_FILLED_IN=1` clears the template's #error guard — drop this flag
+# if you wrote the harness from scratch (no template guard to clear).
 hipcc -O3 -std=c++17 -gline-tables-only \
       --offload-arch=gfx942 \
       -munsafe-fp-atomics \
@@ -188,9 +188,10 @@ rocprof-compute profile -n <run_name>_<tag> \
     -p "$PROFILE_RUN_DIR/reports/rpc_<tag>" \
     -- "$PROFILE_RUN_DIR/harness/kernel_harness" [args]
 
-# (Optional) timeseries pass — required for Dimension 5 (CU timeline) /
-# Pattern M (tail effect). Lands a separate `pmc_perf_timeseries.csv` under
-# the rpc_ts_<tag> directory; plot_timeline.py / Dimension 5 consume it.
+# (Optional) timeseries pass — required for Dimension 5 (CU timeline),
+# Pattern B (tail effect), and Pattern M (pipeline bubbles). Lands a separate
+# `pmc_perf_timeseries.csv` under the rpc_ts_<tag> directory; plot_timeline.py
+# / Dimension 5 consume it.
 rocprof-compute profile -n <run_name>_<tag>_ts \
     -k "my_kernel" --timeseries-sampling-rate 1ms \
     -p "$PROFILE_RUN_DIR/reports/rpc_ts_<tag>" \

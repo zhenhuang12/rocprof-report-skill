@@ -102,7 +102,7 @@ For a browsable GUI, use the **ROCprof Compute Viewer** (the AMD analog of `ncu-
 
 ## Recipe 2b: Timeseries collection (optional, required for CU timeline / tail-effect analysis)
 
-Recipe 2 averages PMCs over the whole kernel. To see the *shape* of utilization over time — pipeline bubbles, tail effect, ramp-up / ramp-down — collect a separate timeseries pass. Dimension 5 (CU timeline) and Pattern M (tail effect) in the diagnosis playbook both consume this CSV. Skip if you don't need timeline analysis.
+Recipe 2 averages PMCs over the whole kernel. To see the *shape* of utilization over time — pipeline bubbles, tail effect, ramp-up / ramp-down — collect a separate timeseries pass. Dimension 5 (CU timeline), Pattern B (tail effect from variable-length inputs), and Pattern M (pipeline bubbles) in the diagnosis playbook all consume this CSV. Skip if you don't need timeline analysis.
 
 ```bash
 rocprof-compute profile -n <run_name>_<tag>_ts \
@@ -231,7 +231,7 @@ rocprofv3 -i /tmp/pmc.yaml -f csv -d $PROFILE_RUN_DIR/reports/pmc_<tag> -- ./har
 
 A single `pmc:` list must fit in one hardware pass — rocprofv3 will **fail** the job if the counters don't fit, it does not auto-split. To collect more than one pass' worth, add multiple `- pmc: ...` entries under `jobs:` (one entry = one extra pass), or use `pmc_groups:` for explicit grouping. Counters that share a unit (SQ_*, TCP_*, TCC_*) often fit in one group; check `rocprofv3 -L` output for the conflict list.
 
-The full list of available counters: `rocprofv3 -L` (long form `--list-avail`). On newer ROCm builds, `rocprofv3-avail list --pmc` is the dedicated companion. The legacy `--list-counters` / `--list-metrics` flags are from rocprof v1/v2 and are not part of rocprofv3.
+The full list of available counters: `rocprofv3 -L` (long form `--list-supported-counters`; the older `--list-avail` is rocprof v1 and does NOT exist in rocprofv3). On newer ROCm builds, `rocprofv3-avail list --pmc` is the dedicated companion. The legacy `--list-counters` / `--list-metrics` flags are from rocprof v1/v2 and are not part of rocprofv3.
 
 ---
 

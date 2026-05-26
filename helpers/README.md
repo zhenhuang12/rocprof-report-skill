@@ -39,7 +39,7 @@ For MI355X (gfx950), use `--offload-arch=gfx950` and ROCm 7+.
 ### Typical Python workflow
 
 ```bash
-export PROFILE_RUN_DIR=profile/<run_name>
+export PROFILE_RUN_DIR="$PWD/profile/<run_name>"   # absolute path
 export SKILL=~/.claude/skills/rocprof-report-skill   # or wherever the skill is installed
 export FIB_DATASET_PATH=/path/to/flashinfer-trace    # if using FIB workloads
 

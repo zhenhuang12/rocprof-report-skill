@@ -154,7 +154,7 @@ python3 "$SKILL/helpers/plot_timeline.py" \
 # Browse a flashinfer-trace dataset to pick workload shapes
 export FIB_DATASET_PATH=/path/to/flashinfer-trace
 python3 "$SKILL/helpers/list_flashinfer_workloads.py" \
-    --definition <your_definition_name>
+    --definition "<your_definition_name>"
 ```
 
 The HIP harness template + safetensors loader live under `helpers/`; copy them into your profile run's `harness/` directory and fill in the kernel body. See `reference/02-harness-guide.md` for details.

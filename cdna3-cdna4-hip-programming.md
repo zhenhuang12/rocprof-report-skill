@@ -57,7 +57,7 @@ If you are coming from NVIDIA, the most important mental adjustments are:
 | Peak BF16/FP16 (MFMA) | ~5 PFLOPS dense (~3.8× CDNA3's 1307 TFLOPS) |
 | Peak FP8 (MFMA, OCP standard E4M3/E5M2) | ~10.1 PFLOPS dense (~3.9× CDNA3's 2614 TFLOPS) |
 | Peak FP6 / FP4 / MXFP | ~20.1 PFLOPS dense each — FP6 shares the FP4 datapath; new on CDNA4 |
-| TF32 | **removed** (XF32 MFMA — present on CDNA3 — is also gone on CDNA4) |
+| TF32 (NVIDIA marketing name) | n/a on AMD; the equivalent is XF32 MFMA, present on **both** CDNA3 and CDNA4 (`SQ_INSTS_VALU_MFMA_MOPS_XF32`) |
 | 2:4 sparsity | **added** |
 | `global_load_lds` widths | wider per-lane variants than CDNA3 (check the LLVM intrinsic / ISA reference for the exact widths your toolchain emits) |
 | Compute partitions | SPX / CPX (other modes depend on ROCm 7 release) |
@@ -201,7 +201,7 @@ Peak throughput (per CU, per cycle, dense): the bigger tile (32x32x8 vs 16x16x16
 | `v_mfma_scale_f32_32x32x64_f8f6f4` | scaled mixed (MX) | FP32 | bigger-tile scale-block form |
 | `v_mfma_*_sparse` | A 2:4 sparse | FP32 | new on gfx950 |
 | `v_mfma_f64_*` | FP64 | FP64 | **halved throughput** vs CDNA3 |
-| TF32-like `*_16x16x4f32` | FP32 | FP32 | **removed**; use BF16 instead |
+| `v_mfma_f32_*xf32` | XF32 (TF32-equivalent) | FP32 | retained from CDNA3 — same shapes, same peak FLOPS |
 
 Always confirm the exact mnemonic against `llvm-mc -mcpu=gfx950 -show-encoding` or `clang/include/clang/Basic/BuiltinsAMDGPU.def`; LLVM occasionally renames intermediate forms during the gfx950 stabilization window.
 
