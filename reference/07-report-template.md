@@ -56,10 +56,10 @@ Minimal runnable command listing:
         > profile/<run_name>/analysis/details_<tag>.txt
 
     # 3. Per-line stall sampling (analog of `ncu --set source`)
-    # Use STOCHASTIC mode to get the granular stall breakdown — its CSV has the
-    # `Stall_Reason` column and the per-category `arb_state_stall_*` counters.
-    # The `host_trap` mode does NOT populate `Stall_Reason`; it only gives
-    # sampled PCs (good for per-line hotspots, but not for a wait-reason breakdown).
+    # Use STOCHASTIC mode to get the wait-reason breakdown — its CSV has the
+    # `Stall_Reason` column. The `host_trap` mode does NOT populate `Stall_Reason`;
+    # it only gives sampled PCs (good for per-line hotspots, but not for a
+    # wait-reason breakdown).
     # See https://rocm.docs.amd.com/projects/rocprofiler-sdk/en/latest/how-to/using-pc-sampling.html
     # Stochastic supports `--pc-sampling-unit cycles` or `instructions` (NOT `time`).
     # Output lands FLAT under -d with PID prefix:
@@ -98,7 +98,7 @@ Minimal runnable command listing:
     │   ├── rpc_ts_<tag>/                   ← optional --timeseries-sampling-rate pass
     │   │   └── pmc_perf_timeseries.csv     ← consumed by plot_timeline.py / Dimension 5
     │   ├── pcsamp_<tag>/                   ← rocprofv3 PC sampling output
-    │   │   ├── <pid>_pc_sampling_stochastic.csv   ← stochastic mode: has `Stall_Reason` + `arb_state_stall_*` columns (use for breakdown)
+    │   │   ├── <pid>_pc_sampling_stochastic.csv   ← stochastic mode: has the `Stall_Reason` column (use for breakdown)
     │   │   └── <pid>_pc_sampling_host_trap.csv    ← host_trap mode: per-line hotspots only (no `Stall_Reason`)
     │   └── att_<tag>/                      ← optional ATT (one JSON per SE/CU)
     └── analysis/                           ← extracted metrics (helpers run from $SKILL/helpers/)
@@ -132,7 +132,7 @@ Minimal runnable command listing:
 | LDS / workgroup | X B | Y B | `pmc_perf.csv: LDS_Per_Workgroup` |
 | Achieved occupancy (waves/SIMD) | X / 8 | Y / 8 | rocprof-compute wavefront block (`-b 5`) |
 | Scratch (= register spill, bytes/wi) | X | Y | `pmc_perf.csv: Scratch_Per_Workitem` |
-| Stall: `arb_state_stall_vmem_tex` (% PC samples) | X% | Y% | Stochastic PC-sampling CSV `Stall_Reason` / `arb_state_stall_*` aggregation (NOT a PMC on gfx942/gfx950; host_trap mode does NOT populate `Stall_Reason`) |
+| Stall: `WAITCNT` on `global_load_*` lines (% PC samples) | X% | Y% | Stochastic PC-sampling CSV `Stall_Reason` aggregation, filtered by `Instruction_Comment` (NOT a PMC on gfx942/gfx950; host_trap mode does NOT populate `Stall_Reason`) |
 
 **One-line read:** <"The kernel runs at X% of compute SoL — it's VMEM-wait-bound on Y, not HBM-BW-bound."> — this is the punchline.
 
@@ -149,7 +149,7 @@ Minimal runnable command listing:
 <per-XCD active cycles, rocprof-compute workgroup-balance breakdown, timeseries shape, input distribution imbalance ratios>
 
 ### 2.3 Instruction-level stall analysis
-<stall breakdown % from **stochastic** PC-sampling `Stall_Reason` / `arb_state_stall_*` aggregation (the ONLY granular source on gfx942/gfx950 — only `SQ_WAIT_ANY`, `SQ_WAIT_INST_ANY`, `SQ_WAIT_INST_LDS` exist as PMCs; the `host_trap` PC-sampling mode does NOT populate `Stall_Reason`, so use it only for per-line hotspots). Top source-line hotspots from PC sampling: `(file:line, Stall_Reason, sample %)`. The authoritative enum is `ROCPROFILER_PC_SAMPLING_INSTRUCTION_NOT_ISSUED_REASON_*` in `/opt/rocm/include/rocprofiler-sdk/pc_sampling.h`. Practical categories from the stochastic CSV: `arb_state_stall_{valu, matrix, lds, lds_direct, scalar, vmem_tex, flat, exp, misc, brmsg}` (with matching `arb_state_issue_*`). Scoreboard waits (`vmcnt` / `lgkmcnt` / `expcnt`) and `s_barrier` synchronization have no dedicated `arb_state_stall_*` category — diagnose via PMCs `SQ_WAIT_ANY` / `SQ_WAIT_INST_ANY` / `SQ_WAIT_INST_LDS` plus source-line correlation. Always verify against your stochastic CSV's actual column names rather than assuming the list above is complete — category names vary across ROCm releases. See [AMD's PC-sampling docs](https://rocm.docs.amd.com/projects/rocprofiler-sdk/en/latest/how-to/using-pc-sampling.html).>
+<stall breakdown % from **stochastic** PC-sampling `Stall_Reason` aggregation (the ONLY granular source on gfx942/gfx950 — only `SQ_WAIT_ANY`, `SQ_WAIT_INST_ANY`, `SQ_WAIT_INST_LDS` exist as PMCs; the `host_trap` PC-sampling mode does NOT populate `Stall_Reason`, so use it only for per-line hotspots). Top source-line hotspots from PC sampling: `(file:line, Stall_Reason, sample %)`. The authoritative enum is `ROCPROFILER_PC_SAMPLING_INSTRUCTION_NOT_ISSUED_REASON_*` in `/opt/rocm/include/rocprofiler-sdk/pc_sampling.h`. `Stall_Reason` values in the stochastic CSV: `NONE`, `NO_INSTRUCTION_AVAILABLE`, `ALU_DEPENDENCY`, `WAITCNT`, `INTERNAL_INSTRUCTION`, `BARRIER_WAIT`, `ARBITER_NOT_WIN`, `ARBITER_WIN_EX_STALL`, `OTHER_WAIT`, `SLEEP_WAIT`. Distinguish memory-type subcategories (global vs LDS vs scalar) by reading the ISA mnemonic in `Instruction_Comment` at the sampled PC — e.g. `WAITCNT` on a `global_load_*` line is a VMEM wait; on a `ds_read_*` line it is an LDS wait. (Per-execution-pipe `arb_state_stall_*` / `arb_state_issue_*` bit-fields are JSON-only — use `rocprofv3 ... -f json` and read the `snapshot` object — not CSV columns.) Always verify against your stochastic CSV's actual `Stall_Reason` values rather than assuming the list above is complete — enum values vary across ROCm releases. See [AMD's PC-sampling docs](https://rocm.docs.amd.com/projects/rocprofiler-sdk/en/latest/how-to/using-pc-sampling.html).>
 
 ### 2.4 MFMA / matrix-core utilization
 <MFMA busy % from rocprof-compute compute-pipe block (`-b 10`); MFMA instruction counts from instruction-mix block (`-b 11`); instruction shape (16×16×16 BF16 / 32×32×8 / FP8 on CDNA3; F6F4 / XF32 on CDNA4), Accum_VGPR (AGPR) usage; or "0%, n/a — kernel is non-MFMA". Cite the actual per-dtype `SQ_INSTS_VALU_MFMA_MOPS_<DTYPE>` counters your install exposes (`rocprofv3 -L | grep MFMA`).>
@@ -183,7 +183,7 @@ Minimal runnable command listing:
 <what to do, concretely, with line numbers / function names from the existing kernel>
 
 **Evidence:**
-- <counter + value, e.g., "Stochastic PC-sampling `arb_state_stall_vmem_tex` accounts for 62% of samples (via `Stall_Reason` column)">
+- <counter + value, e.g., "Stochastic PC-sampling `Stall_Reason == WAITCNT` on `global_load_*` lines accounts for 62% of stalled samples">
 - <rocprof-compute SoL gap, e.g., "Compute SoL = 18%, HBM SoL = 22% — neither resource saturated, bottleneck is stall">
 
 **Expected impact:** <X% end-to-end, Y% on the hot path>, <which workloads benefit>
@@ -216,19 +216,23 @@ Minimal runnable command listing:
     export SKILL=~/.claude/skills/rocprof-report-skill
     mkdir -p "$PROFILE_RUN_DIR"/{harness,reports,analysis}
 
-    # 1) Build the standalone harness
-    hipcc --offload-arch=gfx942 -O3 -g -gline-tables-only \
+    # 1) Build the standalone harness (same recipe used in helpers/README.md
+    #    and helpers/harness_template.hip; keep them in sync if you change it)
+    hipcc -O3 -std=c++17 -gline-tables-only \
+        --offload-arch=gfx942 -munsafe-fp-atomics \
         -DHARNESS_FILLED_IN=1 \
         "$PROFILE_RUN_DIR/harness/harness.hip" \
         -o "$PROFILE_RUN_DIR/harness/harness"
 
-    # 2) Kernel trace + PMC (the two canonical rocprofv3 passes)
-    rocprofv3 --kernel-trace --output-format csv \
+    # 2) Kernel trace + section perf-metrics (the two canonical passes)
+    rocprofv3 --kernel-trace --hip-trace --hsa-trace \
+        --kernel-include-regex "<kernel_regex>" \
+        -f csv \
         -d "$PROFILE_RUN_DIR/reports/trace_<tag>" \
         -- "$PROFILE_RUN_DIR/harness/harness" <args>
 
     rocprof-compute profile -n <tag> -k <kernel_substring> --no-roof \
-        -p "$PROFILE_RUN_DIR/reports" \
+        -p "$PROFILE_RUN_DIR/reports/rpc_<tag>" \
         -- "$PROFILE_RUN_DIR/harness/harness" <args>
 
     # 3) Parse + write analysis artifacts

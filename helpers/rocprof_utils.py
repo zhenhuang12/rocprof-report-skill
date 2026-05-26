@@ -164,8 +164,8 @@ def kernel_duration_ns(rpc):
 # given gfx target with ROCm 6.4 / 7.x. For a fuller list and rationale see
 # ../reference/08-mi300x-mi355x-counter-names.md. Other gfx targets and future
 # ROCm releases may need alternate names — always verify with
-# `enumerate_counters(rpc_dir)` or `rocprofv3 -L` (long form
-# `--list-supported-counters`; the older `--list-avail` is rocprof v1).
+# `enumerate_counters(rpc_dir)` or `rocprofv3 -L` (long form `--list-avail`;
+# verified against `rocprofv3 --help` on ROCm 7.x).
 
 _COMMON_GEOMETRY = [
     # pmc_perf.csv per-dispatch columns (not strictly PMCs but useful).
@@ -379,8 +379,15 @@ def load_pcsamp_csv(csv_path):
         Sample_Timestamp, Exec_Mask, Dispatch_Id, Instruction (PC),
         Instruction_Comment (ISA mnemonic), Correlation_Id,
         Wave_Issued_Instruction (0 = stalled, 1 = issued), Instruction_Type,
-        Stall_Reason (populated only when Wave_Issued_Instruction == 0),
-        Wave_Count, arb_state_stall_<cat>, arb_state_issue_<cat>, ...
+        Stall_Reason (populated only when Wave_Issued_Instruction == 0;
+        one of NONE, NO_INSTRUCTION_AVAILABLE, ALU_DEPENDENCY, WAITCNT,
+        INTERNAL_INSTRUCTION, BARRIER_WAIT, ARBITER_NOT_WIN,
+        ARBITER_WIN_EX_STALL, OTHER_WAIT, SLEEP_WAIT),
+        Wave_Count.
+
+        Note: the per-execution-pipe `arb_state_stall_*` /
+        `arb_state_issue_*` bit-fields are JSON-only (use `-f json` and
+        read the `snapshot` object); they are NOT CSV columns.
 
       host_trap (`<pid>_pc_sampling_host_trap.csv`):
         Sample_Timestamp, Exec_Mask, Dispatch_Id, Instruction,

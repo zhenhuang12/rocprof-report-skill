@@ -29,16 +29,23 @@ Most under-performing HIP kernels are under-performing for exactly one reason th
    mkdir -p "$PROFILE_RUN_DIR"/{harness,reports,analysis}
    ```
 
+   Throughout this skill `<tag>` is a short, descriptive label per profile invocation (e.g. `baseline`, `v2_lds`, `shape_seq2048`) that gets appended to report directory names — `reports/rpc_<tag>/`, `reports/pcsamp_<tag>/`, `analysis/metrics_key_<tag>.txt`. Use the **same** tag across all three (a/b/c) profiles in a single run so the helpers can correlate them. If you're profiling multiple shapes / variants in one run directory, give each its own tag.
+
 1. **Decide what you're profiling.** What inputs? Which dispatch path? What question do you want answered? If the kernel takes variable-sized inputs (variable seq lengths, variable batch sizes), you must pick specific representative shapes from the user's workload — don't profile with arbitrary inputs.
 
 2. **Build a standalone harness** unless the user is profiling through their existing binary. Harnesses compile in seconds, run the kernel in isolation, and let you use `-gline-tables-only` cleanly so ATT / PC-sampling can map ISA back to source. Compile into `profile/<run_name>/harness/`. See [`reference/02-harness-guide.md`](reference/02-harness-guide.md) and the template in [`helpers/harness_template.hip`](helpers/harness_template.hip). **The template ships with a `#error` guard**; pass `-DHARNESS_FILLED_IN=1` once you've replaced its TODOs.
 
-3. **Run three (sometimes four) profiles** — write all outputs to `profile/<run_name>/reports/`. See [`reference/03-collection.md`](reference/03-collection.md) for the full recipes.
+3. **Run three (sometimes four) profiles** — write all outputs to `profile/<run_name>/reports/`. See [`reference/03-collection.md`](reference/03-collection.md) for the full recipes. Begin every shell that runs a profile recipe with these guards so a missing var fails loudly instead of writing into `/reports/...`:
+
+   ```bash
+   : "${PROFILE_RUN_DIR:?run step 0 first — PROFILE_RUN_DIR is unset}"
+   : "${SKILL:?export SKILL=... to your skill install path}"
+   ```
 
    - **(a) Overview timeline:** `rocprofv3 --kernel-trace --hip-trace --hsa-trace ...`.
    - **(b) Section-based perf metrics:** `rocprof-compute profile -k <kernel-substring> ...` — the AMD analog of `ncu --set full`. Roofline is on by default; pass `--no-roof` to skip.
    - **(c) Per-line stall attribution** (AMD analog of `ncu --set source --section SourceCounters`) — **prefer PC sampling**:
-     - **Stochastic** mode is the only one that populates `Stall_Reason` + per-category `arb_state_stall_*` counters: `rocprofv3 --pc-sampling-beta-enabled --pc-sampling-method stochastic --pc-sampling-unit cycles --pc-sampling-interval 1048576`. **Note:** stochastic mode requires `--pc-sampling-unit cycles` (or `instructions`) — `time` is rejected. See [AMD docs](https://rocm.docs.amd.com/projects/rocprofiler-sdk/en/latest/how-to/using-pc-sampling.html).
+     - **Stochastic** mode is the only one that populates the `Stall_Reason` CSV column: `rocprofv3 --pc-sampling-beta-enabled --pc-sampling-method stochastic --pc-sampling-unit cycles --pc-sampling-interval 1048576`. **Note:** stochastic mode requires `--pc-sampling-unit cycles` (or `instructions`) — `time` is rejected. See [AMD docs](https://rocm.docs.amd.com/projects/rocprofiler-sdk/en/latest/how-to/using-pc-sampling.html).
      - **Host-trap** mode is cheaper but emits sampled PCs only — use for per-line hotspots when you don't need the stall-reason classification: `rocprofv3 --pc-sampling-beta-enabled --pc-sampling-method host_trap --pc-sampling-unit time --pc-sampling-interval 1000`.
      - **ATT/SQTT** (`rocprofv3 --att ...`) is the fallback only when PC sampling isn't available.
      - Outputs land FLAT under `-d` with a PID prefix (`pcsamp_<tag>/<pid>_pc_sampling_stochastic.csv`), **NOT** nested under `pmc_1/<host>/` (that's the PMC-counter layout).
@@ -87,7 +94,7 @@ Most under-performing HIP kernels are under-performing for exactly one reason th
 
 ## Critical lessons (don't skip)
 
-1. **Don't transplant NVIDIA-style metric names.** AMD has its own counter taxonomy: `SQ_*` (shader / wave), `TCP_*` (vL1 cache), `TCC_EA0_*` (L2 on MI300+ — note the `_EA0` / `_EA1` channel suffix, NOT `TCC_EA_*`), `GRBM_*` (graphics / global). Many third-party blog posts cite gfx906 (MI50) or gfx908 (MI100) names that no longer exist on gfx942 / gfx950. Use the lists in [`reference/08-mi300x-mi355x-counter-names.md`](reference/08-mi300x-mi355x-counter-names.md) or enumerate via `rocprofv3 -L` (`--list-supported-counters`; the older `--list-avail` is rocprof v1 and does NOT exist in rocprofv3).
+1. **Don't transplant NVIDIA-style metric names.** AMD has its own counter taxonomy: `SQ_*` (shader / wave), `TCP_*` (vL1 cache), `TCC_EA0_*` (L2 on MI300+ — note the `_EA0` / `_EA1` channel suffix, NOT `TCC_EA_*`), `GRBM_*` (graphics / global). Many third-party blog posts cite gfx906 (MI50) or gfx908 (MI100) names that no longer exist on gfx942 / gfx950. Use the lists in [`reference/08-mi300x-mi355x-counter-names.md`](reference/08-mi300x-mi355x-counter-names.md) or enumerate via `rocprofv3 -L` (long form `--list-avail`; the older rocprof v1 `--list-counters` / `--list-metrics` flags are gone, but `-L` / `--list-avail` is the canonical rocprofv3 spelling — verified against `rocprofv3 --help` on ROCm 7.x).
 
 2. **Always compile with `-gline-tables-only` (or `-g`).** Without it, the `Source` column in ATT output and the `Instruction_Comment` column in PC-sampling output are blank — and you cannot do per-line stall analysis. If you can't add `-gline-tables-only` to the build system (PyTorch's `torch.utils.cpp_extension`, Triton, hipBLASLt JIT), **build a standalone harness** — that's the whole point.
 
@@ -97,7 +104,7 @@ Most under-performing HIP kernels are under-performing for exactly one reason th
 
 5. **rocprof-compute's "Speed-of-Light" panel already does half the work.** Each section (2.1.x ID) summarizes the gap between achieved and peak and ranks which subsystem is the bottleneck. Read it first — it often points straight at the answer.
 
-6. **Don't delegate understanding.** Run the profiles yourself, open the reports, cite specific counter values. Never write "the profile shows it's memory-bound" — instead, name the two or three counter values that back your conclusion (e.g., "`TCC_EA0_RDREQ_sum` per kernel sits at X (only Y% of peak HBM BW), and `SQ_WAIT_INST_LDS / SQ_BUSY_CYCLES` exceeds 30%, so the kernel is **LDS-bank-conflict-bound on the shared-memory phase**, not HBM-BW-bound"). Fill in the actual numbers from your report — verify each counter name with `rocprofv3 -L | grep` if you're unsure. Specificity is the deliverable.
+6. **Don't delegate understanding.** Run the profiles yourself, open the reports, cite specific counter values. Never write "the profile shows it's memory-bound" — instead, name the two or three counter values that back your conclusion (e.g., "`TCC_EA0_RDREQ_sum` per kernel sits at `<NUMBER>` (only `<NUMBER>`% of peak HBM BW), and `SQ_WAIT_INST_LDS / SQ_BUSY_CYCLES` exceeds 30%, so the kernel is **LDS-bank-conflict-bound on the shared-memory phase**, not HBM-BW-bound"). Replace every `<NUMBER>` with the actual value from your report — do **not** copy literal `X` / `Y` / `<NUMBER>` into the final report. Verify each counter name with `rocprofv3 -L | grep` if you're unsure. Specificity is the deliverable.
 
 ---
 

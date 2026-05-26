@@ -32,7 +32,7 @@ For MI355X (gfx950), use `--offload-arch=gfx950` and ROCm 7+.
 |---|---|
 | `rocprof_utils.py` | Shared helpers: `load_rpc_dir`, `safe_col`, `key_counters_for_arch`, `dump_all_counters`, `MI300X_KEY_COUNTERS`, `MI355X_KEY_COUNTERS`, `per_kernel_durations_from_db`, ... |
 | `analyze_reports.py` | Extract key counters + side-by-side comparison from one or more rocprof-compute output dirs |
-| `extract_stall_hotspots.py` | Aggregate PC-sampling CSV (stochastic preferred — has `Stall_Reason` + `arb_state_stall_*`; host_trap = hotspots only) or ATT JSON → per-source-line rankings (requires `-gline-tables-only` for `file:line` attribution) |
+| `extract_stall_hotspots.py` | Aggregate PC-sampling CSV (stochastic preferred — has the `Stall_Reason` column; host_trap = hotspots only) or ATT JSON → per-source-line rankings (requires `-gline-tables-only` for `file:line` attribution) |
 | `plot_timeline.py` | ASCII plot rocprof-compute timeseries CSV / per-CU distribution (reveals tail effect, pipeline bubbles, workgroup imbalance) |
 | `list_flashinfer_workloads.py` | Browse a flashinfer-trace dataset: show axes, histogram workload shapes, print safetensors paths for specific UUIDs |
 
@@ -76,7 +76,9 @@ python3 $SKILL/helpers/plot_timeline.py --run-dir $PROFILE_RUN_DIR \
     --rpc $PROFILE_RUN_DIR/reports/rpc_<tag> --tag <tag> --per-cu
 ```
 
-All scripts take `--run-dir` and write under `<run-dir>/analysis/`.
+The `analyze_reports.py`, `extract_stall_hotspots.py`, and `plot_timeline.py` helpers
+all take `--run-dir` and write under `<run-dir>/analysis/`. `list_flashinfer_workloads.py`
+is a dataset browser and only prints to stdout; it does not write to `<run-dir>/`.
 
 ### Dependencies
 

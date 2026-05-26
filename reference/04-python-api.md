@@ -106,7 +106,7 @@ for name in sorted(seen):
         print(name)
 ```
 
-This is the AMD analog of `action.metric_names()` — it shows which counters were *collected* in this report. For "which counters *could* be collected on this GPU", run `rocprofv3 -L` (long form `--list-supported-counters`; the older `--list-avail` is rocprof v1 and does NOT exist in rocprofv3).
+This is the AMD analog of `action.metric_names()` — it shows which counters were *collected* in this report. For "which counters *could* be collected on this GPU", run `rocprofv3 -L` (long form `--list-avail`; verified against `rocprofv3 --help` on ROCm 7.x. The legacy `--list-counters` / `--list-metrics` / `--list-basic` / `--list-derived` flags are all gone).
 
 ---
 
@@ -133,7 +133,7 @@ For PC-sampling / ATT-style per-PC data (the AMD analog of NVIDIA's per-correlat
 
 ```python
 # PC sampling — rocprofv3 writes the CSV FLAT under -d with a PID prefix:
-#   pcsamp_<tag>/<pid>_pc_sampling_stochastic.csv   (preferred: has Stall_Reason + arb_state_stall_*)
+#   pcsamp_<tag>/<pid>_pc_sampling_stochastic.csv   (preferred: has Stall_Reason)
 #   pcsamp_<tag>/<pid>_pc_sampling_host_trap.csv    (PCs only, NO Stall_Reason column)
 # Glob accepts both the flat layout and the older nested form
 # (pcsamp_<tag>/pmc_1/<host>/<pid>_pc_sampling_*.csv) as a fallback so this
@@ -150,7 +150,12 @@ if not csvs:
 pcs = pd.concat([pd.read_csv(p) for p in csvs], ignore_index=True)
 # Stochastic columns: Sample_Timestamp, Exec_Mask, Dispatch_Id, Instruction (PC),
 #   Instruction_Comment, Correlation_Id, Wave_Issued_Instruction, Instruction_Type,
-#   Stall_Reason, Wave_Count, arb_state_stall_<cat>, arb_state_issue_<cat>, ...
+#   Stall_Reason, Wave_Count.
+# Stall_Reason values: NONE, NO_INSTRUCTION_AVAILABLE, ALU_DEPENDENCY, WAITCNT,
+#   INTERNAL_INSTRUCTION, BARRIER_WAIT, ARBITER_NOT_WIN, ARBITER_WIN_EX_STALL,
+#   OTHER_WAIT, SLEEP_WAIT.
+# Note: per-pipe `arb_state_stall_*` / `arb_state_issue_*` fields are JSON-only
+# (use `-f json` and read the `snapshot` object); they are NOT CSV columns.
 # Host_trap columns are a strict subset (no Stall_Reason).
 if "Stall_Reason" in pcs.columns:
     # Only stalled rows carry a Stall_Reason; productive issues have Wave_Issued_Instruction == 1.
@@ -189,7 +194,7 @@ def per_source_line(pcs_df, stall_reason=None, *, wait_reason=None):
     total = agg.sum()
     return agg.head(20).to_frame("samples").assign(pct=lambda d: d["samples"]/total*100)
 
-print(per_source_line(pcs, stall_reason="arb_state_stall_vmem_tex"))
+print(per_source_line(pcs, stall_reason="WAITCNT"))
 ```
 
 `extract_stall_hotspots.py` ships a complete implementation that handles both PC-sampling CSV (stochastic + host_trap) and ATT JSON.

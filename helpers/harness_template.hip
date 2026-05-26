@@ -37,7 +37,7 @@
 // `-DHARNESS_FILLED_IN=1` to hipcc). The guard prevents accidentally profiling
 // the unmodified skeleton.
 #ifndef HARNESS_FILLED_IN
-#error "harness_template.hip: replace all TODO(you) sections (lines 99, 126, 172, 180, 187, 193, 202), then define HARNESS_FILLED_IN (e.g. -DHARNESS_FILLED_IN=1)."
+#error "harness_template.hip: replace every TODO(you) section in this file (grep them with `grep -n 'TODO(you)' harness.hip`), then define HARNESS_FILLED_IN (e.g. -DHARNESS_FILLED_IN=1)."
 #endif
 
 #include <hip/hip_runtime.h>

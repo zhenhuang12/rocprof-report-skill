@@ -4,7 +4,7 @@
 Reads PC-sampling CSV produced by rocprofv3. The two modes produce different
 schemas — prefer STOCHASTIC, which is the only mode that emits `Stall_Reason`:
 
-    # Stochastic (preferred — has Stall_Reason + per-category arb_state_stall_*):
+    # Stochastic (preferred — has Stall_Reason):
     rocprofv3 --pc-sampling-beta-enabled \\
         --pc-sampling-method stochastic \\
         --pc-sampling-interval 1048576 --pc-sampling-unit cycles \\
@@ -26,7 +26,18 @@ Stochastic CSV columns:
     Instruction_Comment (ISA mnemonic), Correlation_Id,
     Wave_Issued_Instruction (0 = stalled, 1 = issued), Instruction_Type,
     Stall_Reason (populated only when Wave_Issued_Instruction == 0),
-    Wave_Count, arb_state_stall_<cat>, arb_state_issue_<cat>, ...
+    Wave_Count.
+
+Stall_Reason enum values (from
+ROCPROFILER_PC_SAMPLING_INSTRUCTION_NOT_ISSUED_REASON_* in
+/opt/rocm/include/rocprofiler-sdk/pc_sampling.h): NONE,
+NO_INSTRUCTION_AVAILABLE, ALU_DEPENDENCY, WAITCNT, INTERNAL_INSTRUCTION,
+BARRIER_WAIT, ARBITER_NOT_WIN, ARBITER_WIN_EX_STALL, OTHER_WAIT, SLEEP_WAIT.
+
+Note: the per-execution-pipe `arb_state_stall_{valu,matrix,lds,lds_direct,
+scalar,vmem_tex,flat,exp,misc,brmsg}` bit-fields live in the JSON output
+(under the `snapshot` object — use `-f json` instead of `-f csv`), NOT as
+CSV columns. This script aggregates only by the CSV `Stall_Reason` column.
 
 Host_trap CSV columns are a strict subset (no Stall_Reason).
 
@@ -253,9 +264,8 @@ def _resolve_pcsamp_dir(d):
     working across rocprofv3 versions.
 
     When both stochastic and host_trap CSVs are present, we prefer **stochastic**
-    — it's the only mode that emits `Stall_Reason` + per-category
-    `arb_state_stall_*` counters needed for a true wait-reason breakdown.
-    Caller can pass --pcsamp directly to override.
+    — it's the only mode that emits the `Stall_Reason` column needed for a true
+    wait-reason breakdown. Caller can pass --pcsamp directly to override.
     """
     base = Path(d)
     # Flat layout first (current rocprofv3), then nested fallback.

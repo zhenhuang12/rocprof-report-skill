@@ -82,8 +82,12 @@ Each XCD has its own L2 (TCC) and the L2-to-HBM EA path is exposed in PMC as a s
 In **SPX (Single Partition)** mode, all 304 CUs see one logical GPU and one HBM address space. In **CPX (8 partitions)** mode, each XCD is its own logical GPU with 38 CUs and ~24 GB HBM. **NPS** controls memory interleaving: NPS1 = all stacks interleaved; NPS4 = each pair of stacks bound to a quadrant.
 
 ```bash
+# Preferred on ROCm 6.2+: amd-smi (the rocm-smi successor).
+amd-smi partition           # current compute + memory partition state
+sudo amd-smi set -C CPX -M NPS4   # requires driver-level reset
+
+# Legacy rocm-smi spelling (still works on older installs):
 rocm-smi --showcomputepartition --showmemorypartition
-# To change (requires reboot or driver reset):
 sudo rocm-smi --setcomputepartition CPX --setmemorypartition NPS4
 ```
 
@@ -180,7 +184,7 @@ CDNA matrix cores are called **MFMA** (Matrix Fused Multiply-Add). Unlike NVIDIA
 | `v_mfma_f32_32x32x4_xf32` | XF32 | XF32 | FP32 | bigger-tile XF32; same peak FLOPS |
 | `v_mfma_f32_16x16x16f16` | FP16 | FP16 | FP32 | dense |
 | `v_mfma_f32_32x32x8f16` | FP16 | FP16 | FP32 | dense |
-| `v_mfma_f32_16x16x16bf16_1k` | BF16 | BF16 | FP32 | "1k" = 1 k-block per instruction |
+| `v_mfma_f32_16x16x16bf16_1k` | BF16 | BF16 | FP32 | `_1k` is the LLVM intrinsic suffix that distinguishes the gfx9-family BF16 MFMA encodings from older variants; treat it as opaque ISA tag, not as a per-instruction block count |
 | `v_mfma_f32_32x32x8bf16_1k` | BF16 | BF16 | FP32 | |
 | `v_mfma_f64_16x16x4f64` | FP64 | FP64 | FP64 | dense |
 | `v_mfma_i32_16x16x32i8` | INT8 | INT8 | INT32 | |
@@ -216,7 +220,7 @@ Always confirm the exact mnemonic against `llvm-mc -mcpu=gfx950 -show-encoding` 
 
 ## LDS (Local Data Share) — the AMD shared memory
 
-LDS is per-CU, 32 banks of 4 bytes each. CDNA3 (gfx942) has **64 KB per CU** with **128 B/cycle** peak read bandwidth. CDNA4 (gfx950) bumps this to **160 KB per CU** (2.5× larger) with **256 B/cycle** peak read bandwidth (2×) — wired specifically to feed the wider MFMA tile rates.
+LDS is per-CU. CDNA3 (gfx942) has **64 KB per CU** organized as **32 banks × 4 B** with **128 B/cycle** peak read bandwidth. CDNA4 (gfx950) bumps this to **160 KB per CU** (2.5× larger) with **256 B/cycle** peak read bandwidth (2×) — wired specifically to feed the wider MFMA tile rates. The CDNA4 bank count / width has not been publicly confirmed in the ISA guide at the time of writing; assume 32 banks until you've verified against your toolchain's `llvm-mc`.
 
 ### Bank conflicts
 
@@ -301,26 +305,28 @@ On gfx942 / gfx950, PMC only exposes a single `TCC_EA0_*` family per XCD (no `TC
 
 ## Stalls — what wait reasons mean (and where they actually come from)
 
-On gfx942 / gfx950, only **three** `SQ_WAIT_*` PMC counters exist as hardware counters: `SQ_WAIT_ANY`, `SQ_WAIT_INST_ANY`, and `SQ_WAIT_INST_LDS` (verify with `rocprofv3 -L | grep SQ_WAIT`). The finer-grained stall-reason classification (VALU / matrix / LDS / scalar / vmem_tex / flat / exp / barrier / misc) is **not** exposed as PMC — it lives only in PC sampling's **stochastic** CSV, in the `Stall_Reason` column and the `arb_state_stall_*` per-category counters. The `host_trap` PC-sampling CSV records only sampled PCs (so you get per-line hotspots) and does NOT contain `Stall_Reason` — use stochastic if you want a stall *breakdown*. See [AMD's PC-sampling docs](https://rocm.docs.amd.com/projects/rocprofiler-sdk/en/latest/how-to/using-pc-sampling.html).
+On gfx942 / gfx950, only **three** `SQ_WAIT_*` PMC counters exist as hardware counters: `SQ_WAIT_ANY`, `SQ_WAIT_INST_ANY`, and `SQ_WAIT_INST_LDS` (verify with `rocprofv3 -L | grep SQ_WAIT`). The finer wait-reason classification is **not** exposed as PMC — it lives only in PC sampling's **stochastic** CSV, in the `Stall_Reason` column. The `host_trap` PC-sampling CSV records only sampled PCs (so you get per-line hotspots) and does NOT contain `Stall_Reason` — use stochastic if you want a stall *breakdown*. See [AMD's PC-sampling docs](https://rocm.docs.amd.com/projects/rocprofiler-sdk/en/latest/how-to/using-pc-sampling.html).
 
-The authoritative enum is `ROCPROFILER_PC_SAMPLING_INSTRUCTION_NOT_ISSUED_REASON_*` in `/opt/rocm/include/rocprofiler-sdk/pc_sampling.h`. The stochastic CSV exposes these as both a single `Stall_Reason` column (filled only when `Wave_Issued_Instruction == 0`) and as per-category sample counts named `arb_state_stall_<cat>` (with matching `arb_state_issue_<cat>` for productive issue):
+The authoritative enum is `ROCPROFILER_PC_SAMPLING_INSTRUCTION_NOT_ISSUED_REASON_*` in `/opt/rocm/include/rocprofiler-sdk/pc_sampling.h`. The stochastic CSV exposes a single `Stall_Reason` column (filled only when `Wave_Issued_Instruction == 0`). The values you will see when grouping CSV rows by `Stall_Reason`:
 
-| `arb_state_stall_<cat>` (from stochastic CSV) | Meaning | Most common cause |
+| `Stall_Reason` value (stochastic CSV) | Meaning | Most common cause |
 |---|---|---|
-| `arb_state_stall_valu` | VALU pipe busy / dependency | VALU dep chain or VALU port pressure |
-| `arb_state_stall_matrix` | MFMA pipe busy / dependency | Matrix-core throughput limit or AGPR dep |
-| `arb_state_stall_lds` | LDS op in flight (also visible via `SQ_WAIT_INST_LDS` PMC) | LDS latency, bank conflicts, or LDS pressure |
-| `arb_state_stall_lds_direct` | LDS direct-read in flight | LDS direct path latency |
-| `arb_state_stall_scalar` | scalar-memory op in flight | Constant cache / kernarg latency |
-| `arb_state_stall_vmem_tex` | vmem op in flight | Outstanding global load — increase ILP, prefetch with `global_load_lds`, fuse loads |
-| `arb_state_stall_flat` | flat-addressing op in flight | Generic-addressing memory access |
-| `arb_state_stall_exp` | export-count drain | Uncommon on compute kernels; mostly graphics paths |
-| `arb_state_stall_misc` | catch-all | Anything not in the above buckets |
-| `arb_state_stall_brmsg` | branch / message stall | Control-flow message backpressure |
+| `ALU_DEPENDENCY` | VALU / MFMA result not yet ready | Long VALU dep chain, VALU port pressure, or matrix-core throughput limit / AGPR dep |
+| `WAITCNT` | `s_waitcnt` drain (vmcnt / lgkmcnt / expcnt) | Outstanding global / LDS / scalar memory op — increase ILP, prefetch with `global_load_lds`, fuse loads |
+| `BARRIER_WAIT` | Waiting at `s_barrier` (workgroup sync) | Other waves haven't arrived; too many barriers, or divergent work per wave |
+| `INTERNAL_INSTRUCTION` | Internal microcode / fixed-latency op in flight | Misc fixed-latency wait |
+| `ARBITER_NOT_WIN` | Lost issue-arbitration round | Issue-slot contention with other waves |
+| `ARBITER_WIN_EX_STALL` | Won arbitration but execution unit busy | Pipe contention downstream of arbitration |
+| `NO_INSTRUCTION_AVAILABLE` | Front-end empty | I-cache miss / fetch stall — corroborate with `SQC_*` PMCs |
+| `OTHER_WAIT` | Catch-all | Anything not in the above buckets |
+| `SLEEP_WAIT` | Wave in `s_sleep` | Explicit sleep (rare on compute kernels) |
+| `NONE` | (sentinel — should not appear on stalled rows) | n/a |
 
-Workgroup-barrier (`s_barrier`) waits don't have a dedicated `arb_state_stall_*` bucket — diagnose them via the coarse PMC `SQ_WAIT_ANY` together with PC-sampling source-line correlation around `s_barrier` mnemonics. Scoreboard waits (`vmcnt` / `lgkmcnt` / `expcnt`) likewise don't surface as individual `arb_state_*` categories — use the PMCs `SQ_WAIT_ANY`, `SQ_WAIT_INST_ANY`, and `SQ_WAIT_INST_LDS` for the aggregate signal. Scratch (= register spill) traffic does **not** have a dedicated stall-reason — diagnose it via `Scratch_Per_Workitem > 0` in launch info plus rocprof-compute's scratch / spill block (`-b 18`). Always verify the exact enum set on your install — values vary across ROCm releases — by checking the actual columns in your stochastic CSV.
+Scratch (= register spill) traffic does **not** have a dedicated `Stall_Reason` value — diagnose it via `Scratch_Per_Workitem > 0` in launch info plus rocprof-compute's scratch / spill block (`-b 18`); the symptoms then surface as `WAITCNT` stalls on spill loads/stores. Always verify the exact enum set on your install — values vary across ROCm releases — by checking the actual `Stall_Reason` values in your stochastic CSV.
 
-A PC-sampling `arb_state_stall_vmem_tex` (or `arb_state_stall_flat`) share above ~30% of samples is usually the #1 bottleneck in a non-trivial kernel. Treatments, in order:
+> **Aside — JSON-only per-pipe snapshot.** Finer per-execution-pipe state (`arb_state_stall_valu`, `arb_state_stall_matrix`, `arb_state_stall_lds`, `arb_state_stall_lds_direct`, `arb_state_stall_scalar`, `arb_state_stall_vmem_tex`, `arb_state_stall_flat`, `arb_state_stall_exp`, `arb_state_stall_misc`, `arb_state_stall_brmsg`, plus matching `arb_state_issue_*`) is available **only in the JSON output**, not the CSV. These are 1-bit fields of the `rocprofiler_pc_sampling_snapshot_v0_t` C struct in `/opt/rocm/include/rocprofiler-sdk/pc_sampling.h`; collect with `rocprofv3 ... -f json` instead of `-f csv` and read them from the `snapshot` object of each PC-sample record. This skill's CSV-driven helpers do not consume them.
+
+A PC-sampling `Stall_Reason == WAITCNT` share above ~30% of samples on global-load hotspots is usually the #1 bottleneck in a non-trivial kernel (the stall is on a `vmcnt` drain after a `global_load_*`). Treatments, in order:
 
 1. **Reduce traffic** — recompute, fuse, exploit symmetry, or use lower precision (FP16/BF16/FP8/FP4 on supported gens).
 2. **Hide latency with ILP** — load 4 or 8 cachelines ahead of compute (double/quad-buffer).

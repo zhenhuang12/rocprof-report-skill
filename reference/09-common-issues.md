@@ -89,7 +89,7 @@ For JIT / framework-integrated builds:
 
 If `rocprofv3` errors with `unrecognized arguments: --list-avail` (or `--input-file`, `--list-counters`, etc.), you're using a flag from the legacy `rocprof` v1 CLI.
 
-- The v3 long form for listing counters is `--list-supported-counters` (short form: `-L`).
+- The v3 long form for listing counters is `--list-avail` (short form: `-L`). The legacy `--list-counters` / `--list-metrics` / `--list-basic` / `--list-derived` are all gone.
 - The v3 input-file flag is `-i <file>` (a YAML PMC spec); the legacy `--input-file <txt>` syntax is gone.
 - Run `rocprofv3 --help` for the full v3 surface — many v1 flag names were renamed wholesale, not just shortened. Don't paste v1 recipes from old wikis without translating first.
 
@@ -240,7 +240,7 @@ It depends on the kernel type:
 
 Always check both SoL gaps:
 - If `HBM SoL` is high (>70%) and `Compute SoL` is low, the kernel is correctly HBM-bound — focus on reducing traffic, not raising compute.
-- If both are low, the kernel is latency-bound — look at the stochastic-PC-sampling `Stall_Reason` / `arb_state_stall_*` breakdown (the only granular wait classification on gfx942/gfx950; `SQ_WAIT_INST_VMEM` is **not** a PMC on these gens — only `SQ_WAIT_ANY`, `SQ_WAIT_INST_ANY`, `SQ_WAIT_INST_LDS` exist as PMCs; the `host_trap` PC-sampling mode does NOT populate `Stall_Reason`).
+- If both are low, the kernel is latency-bound — look at the stochastic-PC-sampling `Stall_Reason` breakdown (the only granular wait classification on gfx942/gfx950; `SQ_WAIT_INST_VMEM` is **not** a PMC on these gens — only `SQ_WAIT_ANY`, `SQ_WAIT_INST_ANY`, `SQ_WAIT_INST_LDS` exist as PMCs; the `host_trap` PC-sampling mode does NOT populate `Stall_Reason`).
 
 ### "rocprof-compute says `Wavefront occupancy = X / 8` — is that bad?"
 

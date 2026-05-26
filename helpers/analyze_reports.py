@@ -81,7 +81,20 @@ def collect(rpc_dir: Path, tag: str, analysis_dir: Path, kernel_regex, arch,
     ktrace = _resolve_kernel_trace(rpc_dir, tag, kernel_trace)
     rpc = load_rpc_dir(rpc_dir, kernel_regex=kernel_regex,
                        kernel_trace_csv=str(ktrace) if ktrace else None)
-    arch_used = arch or detect_arch(rpc) or "gfx942"
+    detected = detect_arch(rpc)
+    if arch:
+        arch_used = arch
+    elif detected:
+        arch_used = detected
+    else:
+        arch_used = "gfx942"
+        print(
+            f"[{tag}] WARN: could not auto-detect gfx arch from "
+            f"{rpc_dir}/sysinfo.csv; defaulting to gfx942. Pass --arch "
+            f"gfx950 (or whatever your card reports via `rocminfo | grep gfx`) "
+            f"if this is wrong — counter / peak lookups will be off otherwise.",
+            file=sys.stderr,
+        )
 
     pmc = rpc.get("pmc")
     n_disp = 0 if pmc is None or pmc.empty else len(pmc)

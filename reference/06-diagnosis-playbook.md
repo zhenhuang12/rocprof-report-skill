@@ -18,6 +18,25 @@ For each *observation* below, read:
 
 Most kernels will match 2-4 patterns simultaneously. **Rank them by magnitude** using rocprof-compute's Speed-of-Light gap-to-peak (from the top-level SoL section — `-b 2` in `rocprof-compute analyze`) and the wait-cycle-percentage breakdown. Fix the biggest one first.
 
+### Pattern index
+
+| ID | Title | One-line trigger |
+|---|---|---|
+| A  | Small grid / CU idle               | Total_Workgroups ≪ CU_count |
+| B  | Tail effect (variable-length inputs)| per-XCD active cycles diverge; CU plot has long tail |
+| C  | Uncoalesced global loads           | bytes/wave ≪ 1024 B; vL1 misses high; `WAITCNT` stalls |
+| D  | Sparse / under-vectorized writes   | `TCC_EA0_WRREQ_*` heavy on `_32B` vs `_64B` |
+| E  | Latency-bound (VMEM-wait-dominated)| `Stall_Reason == WAITCNT` ≫ everything else |
+| F  | Compute-bound but not on Matrix Cores | high SQ_BUSY but low MFMA busy |
+| G  | Atomic contention                  | TCC atomic counters dominate; long latency tail |
+| H  | LDS bank conflicts                 | `SQ_LDS_BANK_CONFLICT > 0`; `SQ_WAIT_INST_LDS` high |
+| I  | Synchronization overhead           | `Stall_Reason == BARRIER_WAIT` significant |
+| J  | Low achieved vs theoretical occupancy | occupancy table flagged register- / LDS- / wkgrp-limited |
+| K  | Register / AGPR spill (scratch traffic) | `Scratch_Per_Workitem > 0` |
+| L  | FP64 used unintentionally          | `SQ_INSTS_VALU_MFMA_MOPS_F64` non-zero on an FP32 kernel |
+| M  | Pipeline bubbles (no compute/memory overlap) | flat low busy with periodic dips in timeseries |
+| N  | Wave divergence                    | low `Exec_Mask` popcount on hot lines |
+
 > **Note on section IDs:** older rocprof-compute (and Omniperf) docs reference dotted IDs like `2.1.1`, `2.1.10`, `2.1.23`. The current rocprof-compute uses **top-level integer block IDs** — see `rocprof-compute analyze --list-metrics gfx942` (or `gfx950`) for the exact mapping (e.g. `2` = top-level SoL, `5` = CS / wavefront, `7` = wavefront launch, `10` = compute pipe, `11` = instruction mix, `12-14` = pipe SoL / cache, `15` = L1D, `16` = L2 cache, `17` = L2-fabric / HBM, `18` = scratch / spill). The patterns below cite both forms where helpful.
 
 > **CU vs SM:** mental model — one CU is the CDNA equivalent of an SM. MI300X has 304 CUs (8 XCDs × 38 CUs, organized over 4 IODs). MI355X has 256 CUs (8 XCDs × 32 CUs, organized over 2 IODs). The patterns below are described in those units.
@@ -85,7 +104,7 @@ Most kernels will match 2-4 patterns simultaneously. **Rank them by magnitude** 
 **Signals:**
 - rocprof-compute instruction-mix / L1D block (`-b 11` or `-b 15`): "Bytes per wavefront" for global_load_* is much less than the peak 256 B for a coalesced dword load (60 B is bad; for `dwordx4` the peak is 1024 B/wave).
 - `TCP_TCC_READ_REQ_sum / TCP_TOTAL_CACHE_ACCESSES_sum > 0.7` (most vL1 accesses miss to L2; `TCP_TOTAL_READ_REQ` does **not** exist on gfx942 / gfx950 — verify with `rocprofv3 -L | grep ^TCP_`).
-- PC-sampling (stochastic mode): primary `Stall_Reason` on the offending load line is `arb_state_stall_vmem_tex` (or `arb_state_stall_flat`); corroborate scoreboard drains via the PMC `SQ_WAIT_ANY` / `SQ_WAIT_INST_ANY`.
+- PC-sampling (stochastic mode): primary `Stall_Reason` on the offending load line is `WAITCNT` (on a `global_load_*` / `flat_load_*` ISA mnemonic — read `Instruction_Comment` at the sampled PC); corroborate scoreboard drains via the PMC `SQ_WAIT_ANY` / `SQ_WAIT_INST_ANY`.
 - ISA shows `global_load_dword` / `global_load_dwordx2` instead of `global_load_dwordx4`.
 
 **Why:** lanes in a wave access non-contiguous addresses; hardware fetches extra cache lines that only a few lanes use.
@@ -133,7 +152,7 @@ If `K < 16`: consider batching multiple iterations' results into a vectorized wr
 ## Pattern E — Latency-bound (VMEM-wait-dominated)
 
 **Signals:**
-- Stochastic PC-sampling shows `arb_state_stall_vmem_tex > 40%` of samples (this is the **only** way to get this signal on gfx942/gfx950 — there is no `SQ_WAIT_INST_VMEM` PMC, and the `host_trap` PC-sampling mode does NOT populate `Stall_Reason`). The coarse `SQ_WAIT_INST_ANY / SQ_BUSY_CYCLES` PMC ratio being high is a corroborating signal but does not classify which kind of wait.
+- Stochastic PC-sampling shows `Stall_Reason == WAITCNT` on `global_load_*` / `flat_load_*` ISA lines (read `Instruction_Comment` at the sampled PC) accounting for > 40% of stalled samples (this is the **only** way to get this signal on gfx942/gfx950 — there is no `SQ_WAIT_INST_VMEM` PMC, and the `host_trap` PC-sampling mode does NOT populate `Stall_Reason`). The coarse `SQ_WAIT_INST_ANY / SQ_BUSY_CYCLES` PMC ratio being high is a corroborating signal but does not classify which kind of wait.
 - `(TCC_EA0_RDREQ_32B_sum × 32) / dur / peak_HBM_BW < 0.1` (→ not HBM-BW-bound).
 - Hotspot lines are global loads (check `stall_hotspots_<tag>.txt`).
 - ISA at the hotspot shows `global_load_*` followed by an `s_waitcnt vmcnt(0)` close behind.
@@ -210,7 +229,7 @@ If `K < 16`: consider batching multiple iterations' results into a vectorized wr
 
 **Signals:**
 - `SQ_LDS_BANK_CONFLICT > 0` (and substantial vs `SQ_INSTS_LDS`).
-- `arb_state_stall_lds` waits (stochastic PC sampling) concentrated on LDS load lines; corroborate with PMC `SQ_WAIT_INST_LDS`.
+- Stochastic PC sampling: `Stall_Reason == WAITCNT` concentrated on `ds_read_*` / `ds_write_*` ISA lines (read `Instruction_Comment` at the sampled PC); corroborate with PMC `SQ_WAIT_INST_LDS`.
 - Access pattern has regular strides that align to bank boundaries.
 
 **Why:** LDS has 32 banks (4 B each on gfx9 — both CDNA3 and CDNA4 keep this layout); same-bank accesses serialize. LDS size per CU is **64 KB on MI300X** and **160 KB on MI355X** (CDNA4 enlarged LDS 2.5× and doubled read BW to 256 B/cycle — extra capacity helps fit bigger MFMA tiles, but the bank-conflict avoidance discipline is unchanged).
@@ -233,7 +252,7 @@ If `K < 16`: consider batching multiple iterations' results into a vectorized wr
 ## Pattern I — Synchronization overhead
 
 **Signals:**
-- Stochastic PC sampling: source-line hotspot on `s_barrier` accounts for >20% of samples (no dedicated `arb_state_stall_barrier` category — diagnose by correlating PMC `SQ_WAIT_ANY` with PC-sampling hits on `s_barrier` mnemonics).
+- Stochastic PC sampling: `Stall_Reason == BARRIER_WAIT` accounts for >20% of stalled samples, with hotspots on `s_barrier` source lines (read `Instruction_Comment` at the sampled PC); corroborate via PMC `SQ_WAIT_ANY`.
 - Source hotspot line is an `s_barrier` (or `__syncthreads()` in source).
 
 **Why:** `__syncthreads()` waits for the slowest wave. Combined with any per-wave work imbalance, this amplifies.
@@ -310,7 +329,7 @@ If `K < 16`: consider batching multiple iterations' results into a vectorized wr
 
 **Signals:**
 - PMC timeline of SQ_INSTS_VALU and TCC_EA0_RDREQ shows a sawtooth (high compute ↔ high HBM alternating; requires the `--timeseries-sampling-rate` collection pass — Recipe 2b in [`03-collection.md`](03-collection.md)).
-- Stochastic PC-sampling `arb_state_stall_vmem_tex` is high *and* HBM throughput is high (the only granular VMEM-wait classification on gfx942/gfx950 is from stochastic PC sampling, not PMC; the `host_trap` mode does not populate `Stall_Reason`).
+- Stochastic PC-sampling `Stall_Reason == WAITCNT` on `global_load_*` / `flat_load_*` lines is high *and* HBM throughput is high (the only granular VMEM-wait classification on gfx942/gfx950 is from stochastic PC sampling, not PMC; the `host_trap` mode does not populate `Stall_Reason`).
 
 **Why:** kernel loads a tile, computes on it, loads next tile — single-buffered.
 

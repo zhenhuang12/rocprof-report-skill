@@ -87,6 +87,8 @@ There are three levels of fidelity for harness inputs:
 
 **Use when:** the kernel has no data-dependent branches that materially affect perf, but you want stable inputs. This is the default for most perf profiling.
 
+**If there is no dataset at all** (greenfield kernel, internal benchmark, or the user has only provided ranges like "batch=8..256, seq=512..8192"), still pick **specific** shapes — don't sweep continuously. Anchor on at least two: one near the lower bound (latency-bound regime) and one near the upper bound (BW-bound regime). Document the chosen shapes in the run's `REPORT.md` setup section so the report is reproducible even without an external dataset to point at.
+
 Example pattern:
 ```cpp
 fill_bf16_random(h_input_main, 0xA0A0ULL, 0.5f);    // main activations in [-0.5, 0.5]

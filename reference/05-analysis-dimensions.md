@@ -148,9 +148,8 @@ Ratios > 3x indicate potential tail effect — investigate (see Pattern B in [`0
 
 > Only three `SQ_WAIT_*` PMC counters exist on gfx942 / gfx950:
 > `SQ_WAIT_ANY`, `SQ_WAIT_INST_ANY`, `SQ_WAIT_INST_LDS`.
-> The granular VALU / matrix / LDS / scalar / vmem_tex / flat / exp / misc classification
-> is **NOT exposed as PMC counters** on gfx942 / gfx950 — it comes only from PC sampling's
-> **stochastic** CSV (`Stall_Reason` column + `arb_state_stall_*` per-category counters).
+> The granular wait-reason classification is **NOT exposed as PMC counters** on gfx942 /
+> gfx950 — it comes only from PC sampling's **stochastic** CSV (`Stall_Reason` column).
 > The `host_trap` mode does NOT populate `Stall_Reason`; it only gives sampled PCs (per-line
 > hotspots). See AMD's PC-sampling docs:
 > https://rocm.docs.amd.com/projects/rocprofiler-sdk/en/latest/how-to/using-pc-sampling.html
@@ -172,56 +171,66 @@ SQ_WAVES
 SQ_LDS_BANK_CONFLICT
 ```
 
-**Per-PC stall metrics — the ONLY source of the granular VALU / matrix / LDS / scalar / vmem_tex / flat / exp / misc classification on gfx942/gfx950** (from `rocprofv3 --pc-sampling-beta-enabled --pc-sampling-method stochastic`; the `host_trap` mode does NOT populate `Stall_Reason`):
+**Per-PC stall metrics — the ONLY source of the granular wait-reason classification on gfx942/gfx950** (from `rocprofv3 --pc-sampling-beta-enabled --pc-sampling-method stochastic`; the `host_trap` mode does NOT populate `Stall_Reason`):
 
-PC sampling's stochastic CSV (`<pid>_pc_sampling_stochastic.csv`) has one row per sample with these columns: `Sample_Timestamp`, `Exec_Mask`, `Dispatch_Id`, `Instruction`, `Instruction_Comment`, `Correlation_Id`, `Wave_Issued_Instruction`, `Instruction_Type`, `Stall_Reason`, `Wave_Count`, and per-category counters `arb_state_stall_<cat>` / `arb_state_issue_<cat>`. The `Stall_Reason` column is populated only when `Wave_Issued_Instruction == 0`. Aggregate by `Stall_Reason` and by source line (via the `Instruction` PC + `addr2line` against the binary built with `-gline-tables-only`) — see [`04-python-api.md`](04-python-api.md) example. The `host_trap` CSV (`<pid>_pc_sampling_host_trap.csv`) lacks `Stall_Reason`; use it only for per-line hotspots, not a breakdown.
+PC sampling's stochastic CSV (`<pid>_pc_sampling_stochastic.csv`) has one row per sample with these columns: `Sample_Timestamp`, `Exec_Mask`, `Dispatch_Id`, `Instruction`, `Instruction_Comment`, `Correlation_Id`, `Wave_Issued_Instruction`, `Instruction_Type`, `Stall_Reason`, `Wave_Count`. The `Stall_Reason` column is populated only when `Wave_Issued_Instruction == 0`. Aggregate by `Stall_Reason` and by source line (via the `Instruction` PC + `addr2line` against the binary built with `-gline-tables-only`) — see [`04-python-api.md`](04-python-api.md) example. The `host_trap` CSV (`<pid>_pc_sampling_host_trap.csv`) lacks `Stall_Reason`; use it only for per-line hotspots, not a breakdown.
 
 ```
-Stall_Reason / arb_state_stall_<cat> values (from the stochastic CSV; the authoritative
-enum is ROCPROFILER_PC_SAMPLING_INSTRUCTION_NOT_ISSUED_REASON_* in
-/opt/rocm/include/rocprofiler-sdk/pc_sampling.h — verify exact column names per install):
+Stall_Reason enum values (from ROCPROFILER_PC_SAMPLING_INSTRUCTION_NOT_ISSUED_REASON_*
+in /opt/rocm/include/rocprofiler-sdk/pc_sampling.h — verify exact values per install):
 
-arb_state_stall_valu          # VALU pipe busy / dependency
-arb_state_stall_matrix        # MFMA pipe busy / dependency
-arb_state_stall_lds           # LDS op in flight (also PMC SQ_WAIT_INST_LDS)
-arb_state_stall_lds_direct    # LDS direct-read in flight
-arb_state_stall_scalar        # scalar-memory op in flight
-arb_state_stall_vmem_tex      # vector / texture memory op in flight
-arb_state_stall_flat          # FLAT-addressing memory op in flight
-arb_state_stall_exp           # export-count drain (uncommon on compute)
-arb_state_stall_misc          # catch-all
-arb_state_stall_brmsg         # branch / message stall
-(plus matching arb_state_issue_<cat> for productive issue per category)
+NONE                         # sentinel; should not appear on stalled rows
+NO_INSTRUCTION_AVAILABLE     # front-end empty (I-cache miss / fetch stall)
+ALU_DEPENDENCY               # VALU / MFMA result not yet ready
+WAITCNT                      # explicit s_waitcnt drain (vmcnt / lgkmcnt / expcnt)
+INTERNAL_INSTRUCTION         # internal microcode / fixed-latency op in flight
+BARRIER_WAIT                 # waiting at s_barrier (workgroup sync)
+ARBITER_NOT_WIN              # lost issue-arbitration round
+ARBITER_WIN_EX_STALL         # won arbitration but execution unit busy
+OTHER_WAIT                   # catch-all
+SLEEP_WAIT                   # wave in s_sleep
 ```
 
-Stall-category names vary between ROCm versions; the canonical list for your install is
-the actual columns of your stochastic PC-sampling CSV and the enum in
-`/opt/rocm/include/rocprofiler-sdk/pc_sampling.h`. Treat any name above as a label to
-match against your actual data, not as a hard guarantee.
+> **Note — JSON-only per-pipe snapshot.** The finer per-execution-pipe state
+> (`arb_state_stall_valu`, `arb_state_stall_matrix`, `arb_state_stall_lds`,
+> `arb_state_stall_lds_direct`, `arb_state_stall_scalar`, `arb_state_stall_vmem_tex`,
+> `arb_state_stall_flat`, `arb_state_stall_exp`, `arb_state_stall_misc`,
+> `arb_state_stall_brmsg`, with matching `arb_state_issue_*`) is **NOT** in the CSV. These
+> are 1-bit fields of the `rocprofiler_pc_sampling_snapshot_v0_t` C struct in
+> `/opt/rocm/include/rocprofiler-sdk/pc_sampling.h` and surface only in the JSON output —
+> collect with `rocprofv3 ... -f json` instead of `-f csv` and read them from the
+> `snapshot` object of each PC-sample record.
+
+Stall-reason enum values vary between ROCm versions; the canonical list for your install
+is the enum in `/opt/rocm/include/rocprofiler-sdk/pc_sampling.h` and the actual
+`Stall_Reason` values present in your stochastic CSV. Treat the list above as a label set
+to match against your actual data, not as a hard guarantee.
 
 **Stall reasons you need to know (approximate NVIDIA analogs in parens):**
 
-| Reason (stochastic PC-sampling category) | Meaning | Typical cause | Fix direction | NVIDIA analog |
+| `Stall_Reason` value (stochastic CSV) | Meaning | Typical cause | Fix direction | NVIDIA analog |
 |---|---|---|---|---|
-| `arb_state_stall_vmem_tex` | waiting on global / vL1 memory | uncoalesced load, latency-bound | coalesce, reuse, add ILP, use `global_load_lds` | `long_scoreboard` |
-| `arb_state_stall_lds` (or PMC `SQ_WAIT_INST_LDS`) | LDS instruction issue stall (covers bank-conflict serialization) | LDS bank conflict, too many LDS ops in flight, long LDS dep chain | pad LDS, swizzle, vectorize (`ds_read_b128`) | `short_scoreboard` / `mio_throttle` |
-| `s_barrier` source-line hotspot (no `arb_state_stall_*` category — diagnose via PMC `SQ_WAIT_ANY` + source-line correlation) | waiting at `s_barrier` | other waves haven't arrived | reduce barriers, fix divergence | `barrier` |
-| `arb_state_stall_scalar` | waiting on scalar memory | scalar load latency (uniform args, constant cache) | bake to constants, prefetch | (no direct analog) |
-| `arb_state_stall_flat` | waiting on FLAT (generic) memory | generic-addressing global/LDS access | use typed global/LDS when possible | `long_scoreboard` |
-| `arb_state_stall_valu` | VALU pipe busy / dependency | long VALU dep chain | break dep chain, more ILP | (partial) `wait` |
-| `arb_state_stall_matrix` | MFMA pipe busy / dependency | matrix-core throughput limit or AGPR dep | reorder MFMA tiles, reduce AGPR pressure | (no direct analog) |
-| scoreboard waits (`vmcnt` / `lgkmcnt` / `expcnt`) — diagnose via PMCs `SQ_WAIT_ANY`, `SQ_WAIT_INST_ANY`, `SQ_WAIT_INST_LDS` (no dedicated `arb_state_*` category) | explicit `s_waitcnt` drain | compiler-inserted ordering | unroll, more ILP between waitcnts | partly `long_scoreboard` |
-| productive issue: `arb_state_issue_*` rows / `Wave_Issued_Instruction == 1` | actually issuing this cycle | **productive** | ignore | `selected` |
+| `WAITCNT` | explicit `s_waitcnt` drain (`vmcnt` / `lgkmcnt` / `expcnt`) | outstanding global / vL1 / LDS / scalar memory op — uncoalesced load, latency-bound, or compiler-inserted ordering | coalesce, reuse, add ILP, use `global_load_lds`, unroll between waitcnts | `long_scoreboard` (vmem) / `short_scoreboard` (lds) / `membar` |
+| `ALU_DEPENDENCY` | VALU / MFMA result not yet ready | long VALU dep chain, VALU port pressure, or matrix-core throughput limit / AGPR dep | break dep chain, more ILP, reorder MFMA tiles, reduce AGPR pressure | `math_pipe_throttle` / (partial) `wait` |
+| `BARRIER_WAIT` | waiting at `s_barrier` (workgroup sync) | other waves haven't arrived; too many barriers, divergent work per wave | reduce barriers, fix divergence, more work per workgroup | `barrier` |
+| `ARBITER_NOT_WIN` | lost issue-arbitration round | issue-slot contention with other waves | n/a — typically benign in isolation | `dispatch_stall` (proxy) |
+| `ARBITER_WIN_EX_STALL` | won arbitration but execution unit busy | pipe contention downstream of arbitration | similar to `ALU_DEPENDENCY` — break dep chain, more ILP | `math_pipe_throttle` / `mio_throttle` |
+| `INTERNAL_INSTRUCTION` | internal microcode / fixed-latency op in flight | misc fixed-latency wait | usually not actionable | `wait` |
+| `NO_INSTRUCTION_AVAILABLE` | front-end empty (fetch stall) | I-cache miss; corroborate with `SQC_*` PMCs | shrink hot code, improve I-cache locality | `no_instruction` |
+| `OTHER_WAIT` | catch-all | anything not in the above buckets | inspect ISA at the hotspot | (no direct analog) |
+| `SLEEP_WAIT` | wave in `s_sleep` | explicit sleep (rare on compute) | remove the sleep | (no direct analog) |
+| productive issue: `Wave_Issued_Instruction == 1` | actually issuing this cycle | **productive** | ignore | `selected` |
 
-Reminder: of the granular categories, only `arb_state_stall_lds` overlaps a PMC (`SQ_WAIT_INST_LDS`). The rest are stochastic-PC-sampling categories only on gfx942/gfx950.
+LDS bank-conflict stalls surface in two places: aggregate cycles via the PMC `SQ_WAIT_INST_LDS`, and per-sample via `Stall_Reason == WAITCNT` on LDS-instruction (`ds_read_*` / `ds_write_*`) source lines. The CSV `Stall_Reason` alone does not split LDS waits from global-memory waits — distinguish via the ISA mnemonic at the sampled PC (`Instruction_Comment`).
 
-**Reading the aggregate counters:** normalize by `SQ_BUSY_CYCLES`. For example `SQ_WAIT_INST_LDS / SQ_BUSY_CYCLES = 0.45` means waves spent 45% of busy cycles waiting on LDS. For the granular vmem_tex / scalar / flat / valu / matrix / etc. breakdowns, count stochastic PC-sampling samples per `Stall_Reason` (or sum `arb_state_stall_<cat>`) instead.
+**Reading the aggregate counters:** normalize by `SQ_BUSY_CYCLES`. For example `SQ_WAIT_INST_LDS / SQ_BUSY_CYCLES = 0.45` means waves spent 45% of busy cycles waiting on LDS. For the granular wait-reason breakdown, count stochastic PC-sampling samples per `Stall_Reason`.
 
 **Reading the PC-sampling percentages:** sum `Sample_Count` (or count rows) over all stochastic samples = total samples. Per-`Stall_Reason` fraction = "% of samples stalled on X". Rules of thumb:
 
-- **`arb_state_stall_vmem_tex` (or `_flat`) > 40% of samples**: kernel is memory-latency-bound. Check Dimension 6 (access patterns) next.
-- **`arb_state_stall_lds` > 30%**: LDS bank conflicts or long dep chains; check `SQ_LDS_BANK_CONFLICT`.
-- **Source-line hotspot on `s_barrier` > 20% of samples**: too much synchronization, or wave divergence before a barrier.
+- **`WAITCNT` > 40% of samples concentrated on `global_load_*` / `flat_load_*` lines**: kernel is memory-latency-bound. Check Dimension 6 (access patterns) next.
+- **`WAITCNT` on `ds_*` (LDS) lines + non-zero `SQ_LDS_BANK_CONFLICT`**: LDS bank conflicts or long dep chains.
+- **`BARRIER_WAIT` > 20% of samples (or `s_barrier` source-line hotspot)**: too much synchronization, or wave divergence before a barrier.
+- **`ALU_DEPENDENCY` dominates on MFMA-heavy kernels**: matrix-pipe throughput limit / AGPR dep — reorder MFMA tiles.
 - **`Wave_Issued_Instruction == 1` fraction < 10%**: very little actual issue — the whole kernel is stall-bound.
 
 **Helper:** `extract_stall_hotspots.py` produces `stall_hotspots_<tag>.txt` which ranks source lines by total stall samples. This directly points at the offending `global_load_dwordx4`, `s_barrier`, `ds_read_b128`, or compute op in source.
@@ -305,7 +314,7 @@ TCC_EA0_RDREQ_sum                           # HBM read pressure over time (TCC_E
 - **Slow ramp up, flat middle, clean drop**: kernel has warmup work (prologue), then steady state. Usually fine.
 - **Per-XCD divergence on MI300X**: plot SQ_BUSY per XCD; > 30% gap between fastest and slowest XCD signals scheduling imbalance.
 
-**Helper:** `plot_timeline.py` — renders ASCII plots. Look at multiple series side-by-side (SQ_WAVES + HBM RDREQ + `arb_state_stall_vmem_tex`) to distinguish the shapes.
+**Helper:** `plot_timeline.py` — renders ASCII plots. Look at multiple series side-by-side (SQ_WAVES + HBM RDREQ + the count of `Stall_Reason == WAITCNT` samples on global-load lines per time bucket) to distinguish the shapes.
 
 **Note:** rocprof-compute's timeseries minimum interval is ~1 ms (much coarser than NVIDIA PM sampling's ~2 µs). For very short kernels (< 100 µs) prefer ATT for time-resolved per-CU activity; rocprof-compute timeseries is for longer kernels and full-app traces.
 
@@ -409,6 +418,6 @@ A value of 62 (out of 1024 peak for `global_load_dwordx4`) means roughly 1 of 16
 
 After walking through all six, write a one-line diagnosis combining them. Structure: name the top 3–4 signals, each tied to a specific dimension. For example:
 
-> "The kernel runs at X% of peak HBM and Y% of peak MFMA throughput (Dim 1, 6). Wait time is dominated by `arb_state_stall_vmem_tex` (Z% of stochastic PC samples, Dim 3), concentrated on <N> source lines whose access pattern is <coalesced/uncoalesced/...> (Dim 6). The PMC timeline shows <flat / tail / sawtooth> shape (Dim 2/5), with <even / N% imbalance across XCDs>. Matrix Cores <used / unused at W%> (Dim 4)."
+> "The kernel runs at X% of peak HBM and Y% of peak MFMA throughput (Dim 1, 6). Wait time is dominated by `Stall_Reason == WAITCNT` on global-load lines (Z% of stochastic PC samples, Dim 3), concentrated on <N> source lines whose access pattern is <coalesced/uncoalesced/...> (Dim 6). The PMC timeline shows <flat / tail / sawtooth> shape (Dim 2/5), with <even / N% imbalance across XCDs>. Matrix Cores <used / unused at W%> (Dim 4)."
 
 Fill in the X/Y/Z/W/N values and <classifications> from your own report. That sentence is the deliverable. Everything else in the report is evidence backing it.

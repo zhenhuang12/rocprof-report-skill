@@ -16,7 +16,8 @@ Two data sources are supported:
    per-CU counter column (e.g. `SQ_WAVES_CU<N>`); some ROCm builds only
    expose chip-wide aggregates, in which case this mode is a no-op.
 
-Produces `<run-dir>/analysis/timeline_plots.txt` with ASCII plots for each
+Produces `<run-dir>/analysis/timeline_plots_<tag1>_<tag2>_....txt` (one file per
+invocation, suffix derived from --tag) with ASCII plots for each
 requested counter. All `--tag` runs are concatenated into the same file
 (under per-tag `###### <tag> ######` headers), so re-invoking overwrites the
 previous run; rename the file in between if you want to keep both.
@@ -47,11 +48,11 @@ except ImportError as e:  # pragma: no cover
 
 
 DEFAULT_COUNTERS = [
-    # Verified PMC counters on gfx942 / gfx950. Granular stall categories
-    # (arb_state_stall_vmem_tex / arb_state_stall_lds / etc.) are NOT PMCs on
-    # these gens — they come from STOCHASTIC PC sampling only (the host_trap
-    # mode does NOT populate Stall_Reason). Use extract_stall_hotspots.py for
-    # that classification.
+    # Verified PMC counters on gfx942 / gfx950. The granular wait-reason
+    # classification (VALU / matrix / LDS / vmem_tex / etc.) is NOT exposed
+    # as PMCs on these gens — it comes from STOCHASTIC PC sampling's
+    # `Stall_Reason` column only (the host_trap mode does NOT populate
+    # Stall_Reason). Use extract_stall_hotspots.py for that classification.
     "SQ_WAVES",
     "SQ_BUSY_CYCLES",
     "SQ_WAIT_INST_ANY",
@@ -232,7 +233,17 @@ def main():
         else:
             out_lines.extend(plot_timeseries_csv(src, counters, args.rows, args.cols))
 
-    out_path = analysis_dir / "timeline_plots.txt"
+    # Suffix the output file with the tags so back-to-back invocations on
+    # different runs (or different sets of tags within one run) don't silently
+    # clobber each other.
+    suffix = "_".join(args.tag)
+    out_path = analysis_dir / f"timeline_plots_{suffix}.txt"
+    if out_path.exists():
+        print(
+            f"[warn] {out_path} exists; overwriting. "
+            f"Pass a different --tag set to keep both.",
+            file=sys.stderr,
+        )
     out_path.write_text("\n".join(out_lines))
     print(f"-> {out_path}")
 

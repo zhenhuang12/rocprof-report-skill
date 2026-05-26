@@ -10,7 +10,12 @@ This document lists the exact `rocprofv3` and `rocprof-compute` commands you sho
 - `rocprofv3` (ROCm 6.2+) and `rocprof-compute` (ROCm 6.3+, formerly Omniperf) on PATH.
 - User in `render` group (and `video` on some distros); ATT and PC sampling may additionally need `CAP_PERFMON` or `kfd_admin_group` — check `getfacl /dev/kfd`.
 - Kernel name known (check with `llvm-objdump --syms --demangle <code-object>` if unsure — see `02-harness-guide.md`).
-- **`$PROFILE_RUN_DIR` exported** (Phase 0 in [`01-workflow.md`](01-workflow.md) and the Quickstart in [`../SKILL.md`](../SKILL.md)). Every recipe below writes to `$PROFILE_RUN_DIR/reports/...` and silently misfires (output lands at `/reports/...`) if the variable is unset.
+- **`$PROFILE_RUN_DIR` exported** (Phase 0 in [`01-workflow.md`](01-workflow.md) and the Quickstart in [`../SKILL.md`](../SKILL.md)). Every recipe below writes to `$PROFILE_RUN_DIR/reports/...`. Prefix any shell you run a recipe in with the fail-loud guards so a missing var stops you instead of writing into `/reports/...`:
+
+```bash
+: "${PROFILE_RUN_DIR:?run Phase 0 first — PROFILE_RUN_DIR is unset}"
+: "${SKILL:?export SKILL=... to your skill install path}"
+```
 
 Quick smoke test:
 ```bash
@@ -128,7 +133,7 @@ Two options. Prefer PC sampling (lower overhead) when available; fall back to AT
 
 ### 3a) PC sampling
 
-**Prefer `stochastic` mode** — it's the only PC-sampling mode that populates `Stall_Reason`, and it also produces the per-category `arb_state_stall_*` / `arb_state_issue_*` counters needed for a true wait-reason breakdown. The `host_trap` mode emits sampled PCs only (good for per-line hotspots, but no wait-reason classification). See AMD's docs: https://rocm.docs.amd.com/projects/rocprofiler-sdk/en/latest/how-to/using-pc-sampling.html
+**Prefer `stochastic` mode** — it's the only PC-sampling mode that populates the `Stall_Reason` CSV column needed for a true wait-reason breakdown. The `host_trap` mode emits sampled PCs only (good for per-line hotspots, but no wait-reason classification). See AMD's docs: https://rocm.docs.amd.com/projects/rocprofiler-sdk/en/latest/how-to/using-pc-sampling.html
 
 ```bash
 # Primary: stochastic mode (MI300+; required for the granular stall breakdown)
@@ -145,7 +150,7 @@ rocprofv3 --pc-sampling-beta-enabled \
 | Flag | Meaning |
 |---|---|
 | `--pc-sampling-beta-enabled` | **Required in ROCm 6.4+** — PC sampling is still a beta feature; sets `ROCPROFILER_PC_SAMPLING_BETA_ENABLED=1` internally. |
-| `--pc-sampling-method` | `stochastic` (MI300+) is the only mode that populates `Stall_Reason` + `arb_state_stall_*`. `host_trap` (MI200+) is portable but gives PC hotspots only. **Note the underscore in `host_trap` — not `host-trap`.** |
+| `--pc-sampling-method` | `stochastic` (MI300+) is the only mode that populates `Stall_Reason`. `host_trap` (MI200+) is portable but gives PC hotspots only. **Note the underscore in `host_trap` — not `host-trap`.** |
 | `--pc-sampling-interval` | Sample every N units (per `--pc-sampling-unit`). For `stochastic` + `cycles`, `1048576` (= 2^20) is a sensible default; for `host_trap` + `time`, units are **microseconds** (`1000` = 1 ms). |
 | `--pc-sampling-unit` | **`stochastic` requires `cycles` or `instructions`** (NOT `time`). **`host_trap` requires `time`** (`cycles` / `instructions` are rejected at runtime as "PC sampling configuration is not supported"). |
 | `--kernel-include-regex` | Limits sampling to matching kernels. |
@@ -154,13 +159,24 @@ rocprofv3 --pc-sampling-beta-enabled \
 Output paths land **flat** under `-d` with a PID prefix (NOT nested under `pmc_1/<host>/`, which is the PMC counter-collection layout):
 
 ```
-pcsamp_<tag>/<pid>_pc_sampling_stochastic.csv   # stochastic: has Stall_Reason + arb_state_stall_*
+pcsamp_<tag>/<pid>_pc_sampling_stochastic.csv   # stochastic: has Stall_Reason
 pcsamp_<tag>/<pid>_pc_sampling_host_trap.csv    # host_trap: sampled PCs only, NO Stall_Reason
 ```
 
-Stochastic CSV columns: `Sample_Timestamp`, `Exec_Mask`, `Dispatch_Id`, `Instruction` (PC), `Instruction_Comment` (the ISA mnemonic — the SASS-equivalent text on AMD), `Correlation_Id`, `Wave_Issued_Instruction` (0 = stalled / 1 = productively issued), `Instruction_Type`, `Stall_Reason` (populated only when `Wave_Issued_Instruction == 0`), `Wave_Count`, and per-category counters `arb_state_stall_{valu, matrix, lds, lds_direct, scalar, vmem_tex, flat, exp, misc, brmsg}` (with matching `arb_state_issue_*`). Source attribution (`file:line`) requires `-gline-tables-only`/`-g` on the build and is reconstructed from `Instruction` via `addr2line` against the binary.
+Stochastic CSV columns (per AMD's PC-sampling docs): `Sample_Timestamp`, `Exec_Mask`, `Dispatch_Id`, `Instruction` (PC), `Instruction_Comment` (the ISA mnemonic — the SASS-equivalent text on AMD), `Correlation_Id`, `Wave_Issued_Instruction` (0 = stalled / 1 = productively issued), `Instruction_Type`, `Stall_Reason` (populated only when `Wave_Issued_Instruction == 0`), and `Wave_Count`. The `Stall_Reason` value is one of the `ROCPROFILER_PC_SAMPLING_INSTRUCTION_NOT_ISSUED_REASON_*` enum values: `NONE`, `NO_INSTRUCTION_AVAILABLE`, `ALU_DEPENDENCY`, `WAITCNT`, `INTERNAL_INSTRUCTION`, `BARRIER_WAIT`, `ARBITER_NOT_WIN`, `ARBITER_WIN_EX_STALL`, `OTHER_WAIT`, `SLEEP_WAIT`. Source attribution (`file:line`) requires `-gline-tables-only`/`-g` on the build and is reconstructed from `Instruction` via `addr2line` against the binary.
+
+> **Note — JSON-only per-pipe snapshot.** The per-execution-pipe `arb_state_stall_{valu, matrix, lds, lds_direct, scalar, vmem_tex, flat, exp, misc, brmsg}` and matching `arb_state_issue_*` bit-fields are **NOT** CSV columns. They live in the `snapshot` object of the JSON output only — use `-f json` instead of `-f csv` if you need them, and read them from each PC-sample record. They are 1-bit fields of `rocprofiler_pc_sampling_snapshot_v0_t` in `/opt/rocm/include/rocprofiler-sdk/pc_sampling.h`.
 
 Host_trap CSV columns are a strict subset: `Sample_Timestamp`, `Exec_Mask`, `Dispatch_Id`, `Instruction`, `Instruction_Comment`, `Correlation_Id`. Use it only if you need cheap per-line hotspots and don't care about the wait-reason breakdown.
+
+**PC-sampling method × unit compatibility:**
+
+| `--pc-sampling-method` ↓ \ `--pc-sampling-unit` → | `cycles` | `instructions` | `time` (µs) |
+|---|---|---|---|
+| `stochastic` (MI300+) | ✅ supported, populates `Stall_Reason` | ✅ supported, populates `Stall_Reason` | ❌ runtime-rejected |
+| `host_trap`           | ❌ runtime-rejected | ❌ runtime-rejected | ✅ supported, hotspots only (no `Stall_Reason`) |
+
+Pick the row by data need (wait-reason vs hotspots-only), then the column by what's accepted on the row.
 
 **Host_trap alternative (cheaper, hotspots only):**
 
@@ -175,7 +191,7 @@ rocprofv3 --pc-sampling-beta-enabled \
     -- ./harness [args]
 ```
 
-If `stochastic` is rejected on your build with "PC sampling configuration is not supported", fall back to `host_trap` — you'll get per-line hotspots but no `Stall_Reason` breakdown.
+If `stochastic` is rejected on your build with "PC sampling configuration is not supported" (older silicon, partition mode mismatch, or unsupported runtime), use `host_trap` instead — you'll get per-line hotspots but no `Stall_Reason` breakdown.
 
 Use `extract_stall_hotspots.py` to aggregate stochastic samples by `(file, line)` and by stall reason; on a host_trap CSV the helper degrades gracefully to per-line hotspot ranking only.
 
@@ -202,7 +218,7 @@ rocprofv3 --att \
 | `--att` | Enable Advanced Thread Trace. |
 | `--att-target-cu N` | Capture this CU index (within each enabled SE). Default is `1`; `0` is equally valid. Both are plain indices — there's no special-case meaning. To cover more CUs, run multiple invocations or script around it. |
 | `--att-shader-engine-mask` | Bitmask of SEs to enable. `0xF` = first 4 SEs. |
-| `--att-buffer-size` | Per-SE trace buffer in bytes. Bump if traces are getting truncated. |
+| `--att-buffer-size` | Per-SE trace buffer in bytes. **Default `0x10000000` (256 MB)** per `rocprofv3 --help`, so the value above is the default; bump it only if traces report truncation. |
 
 Output: per-SE JSON / binary traces; open with ROCprof Compute Viewer or process programmatically via the `att_tool` JSON. Source attribution requires `-gline-tables-only`/`-g`.
 
@@ -243,7 +259,7 @@ rocprofv3 -i /tmp/pmc.yaml -f csv -d $PROFILE_RUN_DIR/reports/pmc_<tag> -- ./har
 
 A single `pmc:` list must fit in one hardware pass — rocprofv3 will **fail** the job if the counters don't fit, it does not auto-split. To collect more than one pass' worth, add multiple `- pmc: ...` entries under `jobs:` (one entry = one extra pass), or use `pmc_groups:` for explicit grouping. Counters that share a unit (SQ_*, TCP_*, TCC_*) often fit in one group; check `rocprofv3 -L` output for the conflict list.
 
-The full list of available counters: `rocprofv3 -L` (long form `--list-supported-counters`; the older `--list-avail` is rocprof v1 and does NOT exist in rocprofv3). On newer ROCm builds, `rocprofv3-avail list --pmc` is the dedicated companion. The legacy `--list-counters` / `--list-metrics` flags are from rocprof v1/v2 and are not part of rocprofv3.
+The full list of available counters: `rocprofv3 -L` (long form `--list-avail`; verified against `rocprofv3 --help` on ROCm 7.x). On newer ROCm builds, `rocprofv3-avail list --pmc` is the dedicated companion. The legacy `--list-counters` / `--list-metrics` / `--list-basic` / `--list-derived` flags are from rocprof v1/v2 and are not part of rocprofv3.
 
 ---
 
