@@ -81,6 +81,8 @@ profile/<run_name>/
 │   │   ├── profiling_config.yaml
 │   │   └── out/pmc_<N>/<host>/<pid>_*.csv   ← raw per-PMC-group passes
 │   ├── rpc_<tag2>/
+│   ├── rpc_ts_<tag1>/              ← (optional) rocprof-compute --timeseries-sampling-rate output
+│   │   └── pmc_perf_timeseries.csv ← consumed by plot_timeline.py / Dimension 5 (CU timeline)
 │   ├── att_<tag1>/                 ← rocprofv3 --att output dir (JSON traces per CU)
 │   ├── att_<tag2>/
 │   ├── pcsamp_<tag1>/              ← rocprofv3 --pc-sampling output dir (CSV per kernel)
@@ -161,12 +163,15 @@ Scripts and rocprof invocations should pick up the run directory from a single e
 
 ```bash
 export PROFILE_RUN_DIR=/abs/path/to/profile/<kernel>_v1_baseline
+export SKILL=~/.claude/skills/rocprof-report-skill   # or wherever the skill is installed
 mkdir -p "$PROFILE_RUN_DIR"/{harness,reports,analysis}
 
-# build harness (MI300X gfx942; add --offload-arch=gfx950 for MI355X)
+# build harness (MI300X gfx942; add --offload-arch=gfx950 for MI355X).
+# `-DHARNESS_FILLED_IN=1` clears the template's #error guard.
 hipcc -O3 -std=c++17 -gline-tables-only \
       --offload-arch=gfx942 \
       -munsafe-fp-atomics \
+      -DHARNESS_FILLED_IN=1 \
       harness.hip -o "$PROFILE_RUN_DIR/harness/kernel_harness"
 
 # kernel-trace overview
@@ -183,6 +188,14 @@ rocprof-compute profile -n <run_name>_<tag> \
     -p "$PROFILE_RUN_DIR/reports/rpc_<tag>" \
     -- "$PROFILE_RUN_DIR/harness/kernel_harness" [args]
 
+# (Optional) timeseries pass — required for Dimension 5 (CU timeline) /
+# Pattern M (tail effect). Lands a separate `pmc_perf_timeseries.csv` under
+# the rpc_ts_<tag> directory; plot_timeline.py / Dimension 5 consume it.
+rocprof-compute profile -n <run_name>_<tag>_ts \
+    -k "my_kernel" --timeseries-sampling-rate 1ms \
+    -p "$PROFILE_RUN_DIR/reports/rpc_ts_<tag>" \
+    -- "$PROFILE_RUN_DIR/harness/kernel_harness" [args]
+
 # ATT / per-line source attribution (analog of ncu --set source)
 rocprofv3 --att --att-target-cu 0 \
     --kernel-include-regex "my_kernel" \
@@ -192,9 +205,10 @@ rocprofv3 --att --att-target-cu 0 \
 # parse — --rpc and --tag are required, once per report dir.
 # --kernel-trace is optional; analyze_reports.py auto-resolves the rocprofv3
 # nested path (trace_<tag>/**/*_kernel_trace.csv) when omitted.
-python3 analyze_reports.py --run-dir "$PROFILE_RUN_DIR" \
+# Pass `--arch` explicitly (gfx942 / gfx950); the script defaults to gfx942.
+python3 "$SKILL/helpers/analyze_reports.py" --run-dir "$PROFILE_RUN_DIR" \
     --rpc "$PROFILE_RUN_DIR/reports/rpc_<tag>" --tag <tag> \
-    --kernel "my_kernel"
+    --kernel "my_kernel" --arch gfx942
 ```
 
 All of the helper scripts in `../helpers/` accept an explicit `--run-dir` (or equivalent path) argument. Pass it explicitly rather than relying on cwd — the scripts assume the standard run layout above and need to find both `reports/` and `analysis/` relative to that root.

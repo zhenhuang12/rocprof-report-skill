@@ -151,7 +151,7 @@ print(hot)
 
 For production use, prefer `helpers/extract_stall_hotspots.py --pcsamp-dir ...` — it handles both layouts and degrades cleanly on missing input.
 
-`Source` is `file:line` (populated only when compiled with `-gline-tables-only` / `-g`). `Instruction_Comment` is the ISA mnemonic (`global_load_dwordx4`, `v_mfma_f32_16x16x16_bf16`, `s_waitcnt`, …). `Wait_Reason` is one of the AMD wait categories — see the table in [`05-analysis-dimensions.md`](05-analysis-dimensions.md).
+`Source` is `file:line` (populated only when compiled with `-gline-tables-only` / `-g`). `Instruction_Comment` is the ISA mnemonic (`global_load_dwordx4`, `v_mfma_f32_16x16x16bf16_1k`, `s_waitcnt`, …; AMDGPU MFMA dtype glues onto the tile shape with no underscore between them, while suffixes like `_1k` use an underscore). `Wait_Reason` is one of the AMD wait categories — see the table in [`05-analysis-dimensions.md`](05-analysis-dimensions.md).
 
 ---
 

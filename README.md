@@ -81,7 +81,9 @@ mkdir -p ~/.claude/skills
 cp -r /tmp/rps ~/.claude/skills/rocprof-report-skill
 ```
 
-### Option 3 — Git submodule
+### Option 3 — Git submodule (project-level only)
+
+Scopes the skill to a single repo (the submodule path lands under `.claude/skills/`, the project-level discovery slot).
 
 ```bash
 cd /path/to/other-repo
@@ -107,37 +109,40 @@ When invoked, Claude reads `SKILL.md`, follows its workflow (phases 0 → 6 in `
 The Python helpers work standalone on any rocprof / rocprof-compute output you have:
 
 ```bash
-# Create a run directory
-export RUN=/path/to/your/profile/myrun
+# Create a run directory (the reference/ docs and Python helpers expect this exact var name)
+export PROFILE_RUN_DIR=/path/to/your/profile/myrun
 export SKILL=~/.claude/skills/rocprof-report-skill
 
-# Extract key metrics from a rocprof-compute "profile" output directory
+# Extract key metrics from a rocprof-compute "profile" output directory.
+# Pass --arch explicitly (gfx942 for MI300X, gfx950 for MI355X) and
+# --kernel to filter the dispatches; the script defaults to gfx942 otherwise.
 python3 "$SKILL/helpers/analyze_reports.py" \
-    --run-dir "$RUN" \
-    --rpc "$RUN/reports/rpc_<tag>" --tag <tag>
+    --run-dir "$PROFILE_RUN_DIR" \
+    --rpc "$PROFILE_RUN_DIR/reports/rpc_<tag>" --tag <tag> \
+    --kernel "<your_kernel_substring>" --arch gfx942
 
 # Per-line stall hotspots: --pcsamp-dir globs the rocprofv3 nested layout
 # (e.g. pmc_1/<host>/<pid>_pc_sampling_host_trap_v0.csv), so you don't have to
 # hardcode the exact filename. Use --pcsamp <file> only if you need a specific CSV.
 python3 "$SKILL/helpers/extract_stall_hotspots.py" \
-    --run-dir "$RUN" \
-    --pcsamp-dir "$RUN/reports/pcsamp_<tag>" --tag <tag>
+    --run-dir "$PROFILE_RUN_DIR" \
+    --pcsamp-dir "$PROFILE_RUN_DIR/reports/pcsamp_<tag>" --tag <tag>
 
 # … or from ATT JSON traces
 python3 "$SKILL/helpers/extract_stall_hotspots.py" \
-    --run-dir "$RUN" \
-    --att-dir "$RUN/reports/att_<tag>" --tag <tag>
+    --run-dir "$PROFILE_RUN_DIR" \
+    --att-dir "$PROFILE_RUN_DIR/reports/att_<tag>" --tag <tag>
 
 # ASCII timelines: per-CU distribution from a rocprof-compute output dir
 python3 "$SKILL/helpers/plot_timeline.py" \
-    --run-dir "$RUN" \
-    --rpc "$RUN/reports/rpc_<tag>" --tag <tag> --per-cu
+    --run-dir "$PROFILE_RUN_DIR" \
+    --rpc "$PROFILE_RUN_DIR/reports/rpc_<tag>" --tag <tag> --per-cu
 
 # … or from a rocprof-compute timeseries CSV (collect with
 # `rocprof-compute profile --timeseries-sampling-rate 1ms ...`)
 python3 "$SKILL/helpers/plot_timeline.py" \
-    --run-dir "$RUN" \
-    --timeseries "$RUN/reports/rpc_ts_<tag>/pmc_perf_timeseries.csv" --tag <tag>
+    --run-dir "$PROFILE_RUN_DIR" \
+    --timeseries "$PROFILE_RUN_DIR/reports/rpc_ts_<tag>/pmc_perf_timeseries.csv" --tag <tag>
 
 # Browse a flashinfer-trace dataset to pick workload shapes
 export FIB_DATASET_PATH=/path/to/flashinfer-trace

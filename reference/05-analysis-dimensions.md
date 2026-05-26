@@ -157,8 +157,7 @@ SQ_WAIT_INST_LDS                       # LDS instruction issue stall (covers ban
 
 # Issue / activity (verified)
 SQ_INSTS_VALU
-SQ_INSTS_VALU_MFMA                     # per-dtype MFMA op counts use `SQ_INSTS_VALU_MFMA_<DTYPE>`
-SQ_INSTS_MFMA                          # aggregate MFMA
+SQ_INSTS_MFMA                          # aggregate MFMA — per-dtype MOPs use `SQ_INSTS_VALU_MFMA_MOPS_<DTYPE>` (see §08)
 SQ_INSTS_VMEM_RD, SQ_INSTS_VMEM_WR
 SQ_INSTS_LDS
 SQ_INSTS_FLAT
@@ -255,7 +254,7 @@ GRBM_GUI_ACTIVE                        # for normalizing to total time
 
 **MI300X (CDNA3 / gfx942) MFMA notes:**
 
-- Supported shapes: `mfma_*_{4x4x4, 16x16x4, 16x16x16, 32x32x4, 32x32x8}` for F32/F16/BF16/I8; FP8 variants via OCP-FNUZ; FP64 added.
+- Supported shapes for F32/F16/BF16: `mfma_*_{4x4x4, 16x16x4, 16x16x16, 32x32x4, 32x32x8}`. **I8 uses larger K**: `v_mfma_i32_{16x16x32, 32x32x16}_i8` (K doubled, since INT8 packs 4 bytes per 32-bit register). FP8 variants via OCP-FNUZ; FP64 added.
 - Accumulators live in **AGPR** (not VGPR). When `Scratch_Per_Workitem > 0` *and* MFMA-heavy, suspect over-allocation of AGPR forcing spill.
 - Use `v_mfma_f32_32x32x8bf16_1k` (or `v_mfma_f32_16x16x16bf16_1k`) over the older 16x16x4 — same throughput per cycle but better register reuse. The `_1k` suffix is the AMD-canonical name in the LLVM/AMDGPU back-end for the 1-block form.
 

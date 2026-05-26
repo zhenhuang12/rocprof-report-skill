@@ -15,9 +15,12 @@ Reusable code for AMD profiling harnesses and rocprof / rocprof-compute report a
 cd profile/<run_name>/harness/
 cp /path/to/skills/rocprof-report-skill/helpers/harness_template.hip my_kernel_harness.hip
 cp /path/to/skills/rocprof-report-skill/helpers/safetensors_loader.h .
-# edit my_kernel_harness.hip to include your kernel + fill in main()
+# edit my_kernel_harness.hip to include your kernel + fill in main();
+# the template ships with a `#error HARNESS_FILLED_IN` guard — pass
+# -DHARNESS_FILLED_IN=1 once you've replaced its TODOs.
 hipcc -O3 -std=c++17 -gline-tables-only \
       --offload-arch=gfx942 -munsafe-fp-atomics \
+      -DHARNESS_FILLED_IN=1 \
       my_kernel_harness.hip -o my_kernel_harness
 ```
 

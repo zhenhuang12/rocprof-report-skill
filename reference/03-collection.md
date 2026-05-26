@@ -99,6 +99,28 @@ For a browsable GUI, use the **ROCprof Compute Viewer** (the AMD analog of `ncu-
 
 ---
 
+## Recipe 2b: Timeseries collection (optional, required for CU timeline / tail-effect analysis)
+
+Recipe 2 averages PMCs over the whole kernel. To see the *shape* of utilization over time — pipeline bubbles, tail effect, ramp-up / ramp-down — collect a separate timeseries pass. Dimension 5 (CU timeline) and Pattern M (tail effect) in the diagnosis playbook both consume this CSV. Skip if you don't need timeline analysis.
+
+```bash
+rocprof-compute profile -n <run_name>_<tag>_ts \
+    -k "KERNEL_SUBSTRING" \
+    --timeseries-sampling-rate 1ms \
+    -p $PROFILE_RUN_DIR/reports/rpc_ts_<tag> \
+    -- ./harness [args]
+```
+
+| Flag | Meaning |
+|---|---|
+| `--timeseries-sampling-rate` | Sample PMC counters at this interval. `1ms` is a sensible default for kernels in the 10 ms - 1 s range; drop to `100us` (= 0.1 ms) for sub-ms kernels; raise to `10ms` for very long ones. rocprof-compute's effective floor is ~1 ms (vs Nsight Compute / PM ~2 µs), so for very-short kernels prefer ATT instead. |
+
+Output: in addition to the usual `pmc_perf.csv`, a `pmc_perf_timeseries.csv` lands under `$PROFILE_RUN_DIR/reports/rpc_ts_<tag>/`. Use `plot_timeline.py --timeseries <path-to-csv>` to render it.
+
+Why a separate run, not `-p` pointing at the same dir as Recipe 2: the timeseries pass adds substantial overhead and writes a different schema. Keeping the two runs separate also lets Recipe 2 stay cheap when you don't need a timeline.
+
+---
+
 ## Recipe 3: Per-line stall sampling (third pass) — analog of `ncu --set source`
 
 Two options. Prefer PC sampling (lower overhead) when available; fall back to ATT.
