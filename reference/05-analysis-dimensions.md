@@ -90,8 +90,9 @@ last_wave_utilization_pct = last_wave_blocks / wkgs_in_flight * 100
 ```
 # Per-CU active-cycle distribution — not exposed as a dedicated rocprof-compute
 # section in current releases; the per-CU / per-XCD workgroup-balance breakdown
-# lives in the wavefront-launch block (-b 7; see Pattern A signal in
-# `08-mi300x-mi355x-counter-names.md`). For finer per-CU resolution, collect
+# lives in the wavefront-launch block (-b 7; see "Per-CU activity (workgroup
+# imbalance)" in `08-mi300x-mi355x-counter-names.md`, and Pattern A in
+# `06-diagnosis-playbook.md` for the diagnosis flow). For finer per-CU resolution, collect
 # SQ_BUSY_CYCLES / GRBM_GUI_ACTIVE manually and aggregate by CU.
 SQ_BUSY_CYCLES (per CU)
 GRBM_GUI_ACTIVE                       # global active cycles

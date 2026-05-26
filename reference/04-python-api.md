@@ -245,8 +245,10 @@ import os, sqlite3, pandas as pd
 RUN = os.environ["PROFILE_RUN_DIR"]
 
 from pathlib import Path
-# rocprofv3 names the file `<pid>_results.db` (PID is unstable per run), so glob it
-db_path = next(Path(f"{RUN}/reports/trace_<tag>").glob("*_results.db"))
+# rocprofv3 default `-d <dir>` nests the .db at `<dir>/<hostname>/<pid>_results.db`;
+# `--output-file <prefix>` collapses it flat to `<dir>/<prefix>_results.db`. Use rglob
+# to cover both (PID and hostname are unstable per run).
+db_path = next(Path(f"{RUN}/reports/trace_<tag>").rglob("*_results.db"))
 con = sqlite3.connect(db_path)
 
 # Kernel durations

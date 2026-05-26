@@ -107,7 +107,7 @@ If `rocprofv3` errors with `unrecognized arguments: --list-avail` (or `--input-f
 
 ## ATT (Advanced Thread Trace / SQTT) gotchas
 
-1. **Default captures 1 CU per SE.** That's intentional — ATT generates ~10s-100s of MB per CU per millisecond. To cover more, increase `--att-shader-engine-mask 0xF` (first 4 SEs) and pick the CU index that matches your tail-effect probe.
+1. **Default captures 1 CU per SE.** That's intentional — ATT generates ~10s-100s of MB per CU per millisecond. To cover more, widen `--att-shader-engine-mask` and pick the CU index that matches your tail-effect probe. **On MI3xx the mask is per-XCD (each hex nibble = one XCD, 4 bits per XCD × 8 XCDs = 32-bit mask)**: `0x1` = SE0 on XCD0 only (default), `0x11111111` = SE0 across all 8 XCDs (recommended for broad coverage), `0xFFFFFFFF` = all 4 SEs on all XCDs (max, risks buffer overflow). `0xF` alone enables 4 SEs **only on XCD0**, not "the first 4 SEs across the chip".
 2. **Buffer overflow / truncated trace.** Bump `--att-buffer-size 0x40000000` (1 GB) and reduce the captured kernel duration. The trace is per-SE; total memory is buffer_size × num_SEs.
 3. **`att_<tag>/*.json` empty or `Source` column blank.** Rebuild with `-gline-tables-only`. ATT also needs symbols to attribute to source — `strip` will silently break it.
 4. **One JSON per CU/SE, not one for the run.** Glob `att_<tag>/**/*.json` and merge in Python. Use `att_tool` (ships with rocprofv3) for binary-format ATT.
@@ -172,8 +172,10 @@ If still broken, fall back to plain `sqlite3` — the `.db` file uses the open `
 ```python
 import sqlite3, pandas as pd
 from pathlib import Path
-# rocprofv3 names this `<pid>_results.db` — glob since PID varies per run
-db_path = next(Path("trace_<tag>").glob("*_results.db"))
+# rocprofv3 default `-d` nests this at `trace_<tag>/<hostname>/<pid>_results.db`;
+# `--output-file <prefix>` collapses to flat `trace_<tag>/<prefix>_results.db`. Use
+# rglob so both layouts work (PID/hostname vary per run).
+db_path = next(Path("trace_<tag>").rglob("*_results.db"))
 con = sqlite3.connect(db_path)
 print(pd.read_sql("SELECT name FROM sqlite_master WHERE type='table'", con))
 ```
