@@ -89,7 +89,7 @@ profile/<run_name>/
 │   │   └── <hostname>/<pid>_counter_collection.csv  ← one CSV per window (default nests under <hostname>/;
 │   │                                                  --output-file <prefix> flattens). plot_timeline.py
 │   │                                                  --per-cu is the currently supported timeline path
-│   ├── att_<tag1>/                 ← rocprofv3 --att output dir; default <hostname>/<pid>_*.{csv,json} (override via --output-file)
+│   ├── att_<tag1>/                 ← rocprofv3 --att output dir; trace-decoder emits stats_*.csv, ui_output_agent_<id>_dispatch_<id>/*.json, *.att, *.out directly under here (no <hostname>/<pid>_ nest)
 │   ├── att_<tag2>/
 │   ├── pcsamp_<tag1>/              ← rocprofv3 --pc-sampling output dir; default <hostname>/<pid>_pc_sampling_{stochastic,host_trap}.csv (override via --output-file)
 │   ├── pcsamp_<tag2>/

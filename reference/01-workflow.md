@@ -92,7 +92,7 @@ If `import rocpd` raises `ModuleNotFoundError` even on ROCm 7+, see [`09-common-
 - The build system already compiles with `-gline-tables-only` (or `-g`). Check the `hipcc` / `amdclang++` command line in your build log.
 - You *need* to profile in-context (e.g., kernel interacts with other kernels, host-side CPU work matters).
 
-Either way, **make sure `-gline-tables-only` (or `-g`) is in the hipcc command**. Without it, the `Source` column in ATT and the `Instruction_Comment` column in PC-sampling will be blank, and per-line stall analysis is impossible.
+Either way, **make sure `-gline-tables-only` (or `-g`) is in the hipcc command**. Without it, the `Source` column in ATT is blank and PC-sampling per-line `file:line` attribution (reconstructed via `addr2line` from the `Instruction` PC) cannot be done — `Instruction_Comment` (the ISA mnemonic) is always populated, but you'll have no way to map PCs back to source lines.
 
 ---
 
