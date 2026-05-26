@@ -92,8 +92,7 @@ profile/<run_name>/
     ├── compare_<a>_vs_<b>.txt      ← side-by-side
     ├── details_<tag>.txt           ← rocprof-compute analyze section dump
     ├── stall_hotspots_<tag>.txt    ← per-line stall aggregation (from ATT / PC-sampling)
-    ├── timeline_imbalance_<tag>.txt
-    ├── timeline_plots.txt          ← ASCII time-series (from plot_timeline.py)
+    ├── timeline_plots.txt          ← ASCII time-series (from plot_timeline.py); one file per run, all tags concatenated
     └── raw_<tag>.csv               ← optional: cleaned PMC csv export
 ```
 

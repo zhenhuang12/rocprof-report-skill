@@ -44,7 +44,7 @@ print('\n'.join(sorted(seen)))
 
 ## Canonical MI300X / MI355X counter set (curated)
 
-These PMC names have been confirmed to exist and return meaningful values on gfx942 and gfx950 with ROCm 6.4 / 7.x. Always verify for your specific build with `rocprofv3 --list-metrics`.
+These PMC names have been confirmed to exist and return meaningful values on gfx942 and gfx950 with ROCm 6.4 / 7.x. Always verify for your specific build with `rocprofv3 -L` (long form `--list-avail`). The legacy `--list-metrics` / `--list-counters` flags are rocprof v1/v2 only and not part of rocprofv3.
 
 ### Launch / wave geometry (from `pmc_perf.csv` per-dispatch columns, not PMCs)
 ```
@@ -77,13 +77,10 @@ SQ_INSTS_LDS                    # LDS instructions
 SQ_INSTS_GDS                    # GDS (rarely used)
 SQ_INSTS_BRANCH                 # branches
 SQ_INSTS_MFMA                   # matrix-core total
-SQ_INSTS_MFMA_F16
-SQ_INSTS_MFMA_BF16
-SQ_INSTS_MFMA_F32_16X16X16BF16  # per-shape breakdown (gfx942+)
-SQ_INSTS_MFMA_F32_16X16X32_F8F6F4    # CDNA4 only (gfx950)
-SQ_INSTS_MFMA_*_F4              # CDNA4 only
-SQ_INSTS_MFMA_*_F6              # CDNA4 only
-SQ_INSTS_MFMA_*_MXF*            # CDNA4 only (MXFP scaling)
+# Per-dtype MFMA op counts use the SQ_INSTS_VALU_MFMA_MOPS_<DTYPE> family —
+# see the dedicated MFMA section below. The legacy SQ_INSTS_MFMA_F32_<TILE>
+# per-shape names are NOT a stable PMC set across ROCm releases; prefer the
+# MOPS family and verify with `rocprofv3 -L | grep -i mfma`.
 SQ_INSTS_VALU_TRANS_F16         # transcendentals
 SQ_INSTS_VALU_TRANS_F32
 SQ_BUSY_CYCLES                  # cycles SQ was issuing on any SE

@@ -16,9 +16,9 @@ __pycache__/
 *.o
 *.d
 *.so
-# Don't ignore source .cu files — those are part of the skill
+# Don't ignore source .hip / .cpp / .cu files — those are part of the skill
 
-# NCU scratch / profile outputs (users generate their own — never commit)
-*.ncu-rep
-*.ncu-proj
-ncu_home/
+# rocprofv3 / rocprof-compute / ATT scratch — users generate their own
+profile/
+*.rpd
+*.db-journal

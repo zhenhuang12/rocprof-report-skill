@@ -14,8 +14,10 @@ Two data sources are supported:
 2. **Per-CU SQ_WAVES distribution** from a regular `pmc_perf.csv`: not a
    true timeseries, but reveals per-CU imbalance and tail effects.
 
-Produces `<run-dir>/analysis/timeline_<tag>.txt` with ASCII plots for each
-requested counter.
+Produces `<run-dir>/analysis/timeline_plots.txt` with ASCII plots for each
+requested counter. All `--tag` runs are concatenated into the same file
+(under per-tag `###### <tag> ######` headers), so re-invoking overwrites the
+previous run; rename the file in between if you want to keep both.
 
 Usage:
     # Timeseries mode

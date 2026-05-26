@@ -243,7 +243,7 @@ In practice you express this via:
 
 ### LDS atomics
 
-`s_lds_atomic_add` etc. work on LDS without going to HBM. Useful for histogramming / reduction within a workgroup. Bank conflicts apply.
+LDS atomics use the `ds_*` instruction family (`ds_add_u32`, `ds_add_rtn_u32`, `ds_cmpst_b32`, `ds_min_u32`, …) and complete inside the CU without going to HBM. Useful for histogramming / reduction within a workgroup. Bank conflicts apply just like for regular LDS reads/writes.
 
 ---
 

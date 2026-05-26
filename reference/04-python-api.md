@@ -94,7 +94,7 @@ for name in sorted(seen):
         print(name)
 ```
 
-This is the AMD analog of `action.metric_names()` — it shows which counters were *collected* in this report. For "which counters *could* be collected on this GPU", run `rocprofv3 --list-metrics`.
+This is the AMD analog of `action.metric_names()` — it shows which counters were *collected* in this report. For "which counters *could* be collected on this GPU", run `rocprofv3 -L` (long form `--list-avail`).
 
 ---
 

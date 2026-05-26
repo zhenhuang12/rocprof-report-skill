@@ -52,7 +52,9 @@ Minimal runnable command listing:
         > profile/<run_name>/analysis/details_<tag>.txt
 
     # 3. Per-line stall sampling (analog of `ncu --set source`)
-    rocprofv3 --pc-sampling-method host-trap \
+    # Note the underscore in `host_trap` (not `host-trap`).
+    rocprofv3 --pc-sampling-beta-enabled \
+        --pc-sampling-method host_trap \
         --pc-sampling-interval 1000 --pc-sampling-unit cycles \
         --kernel-include-regex "<kernel_regex>" \
         -d profile/<run_name>/reports/pcsamp_<tag> \
@@ -117,13 +119,13 @@ Minimal runnable command listing:
 <per-XCD active cycles, rocprof-compute §2.1.23 imbalance, timeseries shape, input distribution imbalance ratios>
 
 ### 2.3 Instruction-level stall analysis
-<stall breakdown % from §2.1.13, top source-line hotspots from PC sampling: `(file:line, Wait_Reason, sample %)`. Wait reasons to call out: WAIT_INST_VMEM, WAIT_ANY_LDS, WAIT_BARRIER, WAIT_INST_SCA, WAIT_INST_VSCRATCH>
+<stall breakdown % from §2.1.13, top source-line hotspots from PC sampling: `(file:line, Wait_Reason, sample %)`. Wait reasons to call out: WAIT_INST_VMEM, WAIT_INST_LDS, WAIT_INST_SMEM, WAIT_INST_FLAT, WAIT_BARRIER, WAIT_VMCNT, WAIT_LGKMCNT. Verify the exact label spelling with `rocprofv3 -L | grep SQ_WAIT` on the install you collected on.>
 
 ### 2.4 MFMA / matrix-core utilization
 <MFMA busy % from §2.1.10, instruction shape (16×16×16 BF16 / 32×32×8 / FP8 / CDNA4 FP4/FP6/MXFP), AGPR usage; or "0%, n/a — kernel is non-MFMA">
 
 ### 2.5 CU timeline
-<shape: flat-high / flat-low / tail / sawtooth — reference the ASCII plot in `analysis/timeline_<tag>.txt`. Note rocprof-compute timeseries minimum interval is ~1 ms vs NVIDIA PM ~2 µs, so very-short kernels need ATT instead>
+<shape: flat-high / flat-low / tail / sawtooth — reference the ASCII plot in `analysis/timeline_plots.txt` (single file per run, regardless of tag count). Note rocprof-compute timeseries minimum interval is ~1 ms vs NVIDIA PM ~2 µs, so very-short kernels need ATT instead>
 
 ### 2.6 Memory access pattern
 <Bytes per wavefront from §2.1.11 (peak 256B for fully coalesced wave64 × dword), vL1 / L2 / HBM hit rates, per-channel HBM balance (TCC_EA0 vs TCC_EA1 — should be ~50/50), scratch traffic (= register spill, on AMD scratch lives in HBM), LDS bank conflicts (`SQ_LDS_BANK_CONFLICT`)>
@@ -203,4 +205,4 @@ Minimal runnable command listing:
 - ❌ Re-running the same profile with different tags and copy-pasting the same analysis — consolidate.
 - ❌ Reporting from the rocprof-compute terminal table directly. Extract, interpret, write — don't dump.
 - ❌ Omitting the setup section. Without it, nobody can reproduce or trust the numbers.
-- ❌ Confusing CDNA3 (MI300X) and CDNA4 (MI355X) counters — they share most names but differ in MFMA shapes, LDS size, FP64 throughput, and absence of Infinity Cache on CDNA4.
+- ❌ Confusing CDNA3 (MI300X) and CDNA4 (MI355X) counters — they share most names but differ in MFMA shapes (FP4/FP6/MXFP + 2:4 sparsity added, TF32 removed), FP64 throughput (halved on CDNA4), and HBM (HBM3 → HBM3E). The 256 MB Infinity Cache is retained on both.

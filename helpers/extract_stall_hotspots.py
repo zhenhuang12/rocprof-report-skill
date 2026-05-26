@@ -2,7 +2,9 @@
 """Aggregate AMD per-PC stall samples into per-source-line hotspots.
 
 Reads PC-sampling CSV produced by:
-    rocprofv3 --pc-sampling-method host-trap \\
+    # Note the underscore in `host_trap` (not `host-trap`).
+    rocprofv3 --pc-sampling-beta-enabled \\
+        --pc-sampling-method host_trap \\
         --pc-sampling-interval 1000 --pc-sampling-unit cycles \\
         --kernel-include-regex "<regex>" \\
         -d <pcsamp_dir> -- ./harness [args]

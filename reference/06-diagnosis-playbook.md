@@ -182,13 +182,13 @@ If `K < 16`: consider batching multiple iterations' results into a vectorized wr
 
 **Signals:**
 - Wait time concentrates on `ATOMIC_*` ISA mnemonics.
-- `TCC_NORMAL_ATOMIC` (or `TCC_GL2_ATOMIC` on CDNA4) is large relative to the surrounding traffic.
+- L2 atomic traffic is large relative to read/write traffic — check the `TCC_ATOMIC*_sum` family on your install (exact suffixes vary by ROCm release; `rocprofv3 -L | grep -i atomic` shows what's exposed).
 - L2 throughput is high but compute throughput is low.
 
 **Why:** many threads atomically updating few locations → serialization.
 
 **First-line fix:** hierarchical reduction.
-- Within-wave: `__shfl_down_sync` / `__shfl_xor_sync` (with `warpSize = 64` on CDNA gfx9) — no atomic.
+- Within-wave: `__shfl_down` / `__shfl_xor` (HIP keeps the `_sync` variants for source compatibility but on CDNA gfx9 the wave is intrinsically lockstep; `warpSize = 64`) — no atomic.
 - Within-workgroup: LDS reduction (no atomic).
 - Between workgroups: single global atomic at the end per workgroup.
 
@@ -237,7 +237,7 @@ If `K < 16`: consider batching multiple iterations' results into a vectorized wr
 **Why:** `__syncthreads()` waits for the slowest wave. Combined with any per-wave work imbalance, this amplifies.
 
 **First-line fix:**
-- Replace workgroup-level syncs with wave-level primitives (`__shfl_sync`, `__ballot_sync`, `__syncwarp`) where only wave-scoped synchronization is needed. Remember `warpSize = 64` on CDNA gfx9 — `__syncwarp` synchronizes 64 lanes, not 32.
+- Replace workgroup-level syncs with wave-level primitives (`__shfl`, `__ballot`, etc.) where only wave-scoped synchronization is needed. On CDNA gfx9 a wave is 64 lanes that execute in lockstep, so `__syncwarp` is effectively a no-op (HIP keeps it for source compatibility with CUDA); the actual lane-coordination work is done by the shuffle/ballot intrinsic itself.
 - Reduce total sync count — consolidate multiple synchronized phases.
 
 **Deeper fixes:**
@@ -316,7 +316,7 @@ If `K < 16`: consider batching multiple iterations' results into a vectorized wr
 
 **Deeper fixes:**
 - Multi-stage pipeline (3-4 stages possible with CDNA3 256+256 register budget). Use `global_load_lds` plus an explicit ring buffer of LDS tiles.
-- CDNA4: 160 KB LDS gives much more room for deeper pipelines (5-6 stages on heavy GEMM tiles).
+- On CDNA4, LDS remains 64 KB/CU; deeper pipelines have to come from the wider `global_load_lds` per-lane variants and the more flexible VGPR/AGPR repartitioning, not from extra LDS.
 
 **Cross-ref:** CDNA principle 15.
 

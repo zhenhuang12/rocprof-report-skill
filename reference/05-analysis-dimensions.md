@@ -41,7 +41,7 @@ XCD_Count                                       # 8 on MI300X SPX; 1-8 depending
 - **Waves per CU > 4**: grid is plenty big, scheduling averages out.
 - **Theoretical occupancy 100% but achieved << 100%**: stalls are the bottleneck, not launch config. Move to Dimension 3.
 - **Theoretical occupancy < 100% and VGPR (or AGPR) is the tightest limiter**: reduce register usage or add `__launch_bounds__`.
-- **LDS** the tightest: workgroup LDS budget too large; reduce tile size or split. Note **MI355X has 160 KB LDS/CU (2.5× MI300X's 64 KB)** — kernels written for CDNA3 can usually grow their LDS footprint on CDNA4.
+- **LDS** the tightest: workgroup LDS budget too large; reduce tile size or split. MI355X keeps the same **64 KB LDS/CU** as MI300X, so don't expect extra headroom on CDNA4 — shrinking the tile or splitting the workgroup is still the fix.
 
 **Derived: wave math**
 
@@ -57,7 +57,7 @@ last_wave_blocks = total_workgroups - (num_waves - 1) * wave_size
 last_wave_utilization_pct = last_wave_blocks / wave_size * 100
 ```
 
-**MI300X partition note:** in SPX/NPS1 mode the kernel sees 1 GPU × 304 CU. In CPX mode it sees 8 GPUs × 38 CU each, with separate HBM partitions. Recompute the wave math against the partition the run actually used. `rocm-smi --showpartition` + `rocminfo` confirm the active mode.
+**MI300X partition note:** in SPX/NPS1 mode the kernel sees 1 GPU × 304 CU. In CPX mode it sees 8 GPUs × 38 CU each, with separate HBM partitions. Recompute the wave math against the partition the run actually used. `rocm-smi --showcomputepartition --showmemorypartition` + `rocminfo` confirm the active mode.
 
 **Helper:** `analyze_reports.py` prints all the key launch counters under "Launch geometry" in the output txt.
 
@@ -295,17 +295,17 @@ TCC_EA0_MEM_REQ_LATENCY                        # latency histogram (if collected
 # Achieved HBM BW = (RDREQ_32B + WRREQ_64B*2) * 32 / kernel_time
 
 # L2 (TCC = Texture Cache (controlled by L2 on CDNA))
-TCC_HIT, TCC_MISS                              # L2 hit/miss counts
-TCC_NORMAL_ATOMIC, TCC_NORMAL_ATOMIC_FAILED    # L2 atomic activity
-TCC_WRITEBACK                                  # L2 evictions writing back to HBM
-# L2 hit rate = TCC_HIT / (TCC_HIT + TCC_MISS)
+TCC_HIT_sum, TCC_MISS_sum                      # L2 hit/miss counts (aggregated across channels)
+TCC_ATOMIC_sum                                 # L2 atomic activity (any return / no-return)
+# L2 hit rate = TCC_HIT_sum / (TCC_HIT_sum + TCC_MISS_sum)
+# More granular atomic / writeback counter names vary by ROCm release — check
+# `rocprofv3 -L | grep -i tcc` rather than assuming a specific spelling.
 
 # vL1 cache (TCP)
-TCP_TCC_READ_REQ_sum                           # vL1 → L2 read requests (= vL1 misses)
+TCP_TOTAL_CACHE_ACCESSES_sum                   # total vL1 accesses
+TCP_TCC_READ_REQ_sum                           # vL1 → L2 read requests (= vL1 read misses)
 TCP_TCC_WRITE_REQ_sum                          # vL1 → L2 writes
-TCP_TOTAL_READ_REQ                             # total vL1 read requests
-TCP_TOTAL_WRITE_REQ
-# vL1 hit rate = 1 - TCC_READ_REQ_sum / TOTAL_READ_REQ
+# vL1 hit rate = 1 - (TCP_TCC_READ_REQ_sum + TCP_TCC_WRITE_REQ_sum) / TCP_TOTAL_CACHE_ACCESSES_sum
 
 # LDS
 SQ_LDS_BANK_CONFLICT                            # LDS bank conflict cycles
@@ -330,7 +330,7 @@ SQ_INSTS_FLAT                                    # FLAT addressing path
 - **vL1 hit rate > 90%**: good data locality, vL1 is absorbing the reuse.
 - **L2 hit rate < 50%**: L2 is being blown through (or the kernel is reading something it never reuses), reads fall to HBM.
 - **Bytes per wavefront (rocprof-compute reports this in section 2.1.11)**: ideal is 256 B (= one `global_load_dwordx4` per lane × 64 lanes × 4 B). Substantially less means under-vectorization; gather/scatter; or stride > 1 access.
-- **`SQ_LDS_BANK_CONFLICT > 0`**: bank conflicts. The 32-bank LDS serializes same-bank accesses. Pad tile dims or swizzle indices. **MI355X has 160 KB LDS/CU vs 64 KB on MI300X** — padding cost is less painful on CDNA4.
+- **`SQ_LDS_BANK_CONFLICT > 0`**: bank conflicts. The 32-bank LDS serializes same-bank accesses. Pad tile dims or swizzle indices. LDS budget is 64 KB/CU on both MI300X and MI355X, so the padding-cost / occupancy trade is the same on both gens.
 - **`Scratch_Per_Workitem > 0` (from launch info) or rocprof-compute SoL "Scratch" non-zero**: **register spill** — very bad, scratch is HBM-backed. Reduce VGPR/AGPR pressure with `__launch_bounds__` or kernel splitting.
 - **`SQ_INSTS_LDS == 0`**: kernel uses no LDS. Fine for element-wise kernels; often a missed optimization for data-reuse-heavy kernels.
 
