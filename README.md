@@ -12,7 +12,7 @@ A Claude Code skill for profiling HIP / ROCm kernels with `rocprofv3` and `rocpr
 
 The skill is self-contained: reference docs, reusable helper scripts (HIP harness template, safetensors loader, report-analysis Python), and a companion CDNA3 / CDNA4 programming reference all ship in this repo.
 
-> **Heritage:** this skill is a 1:1 port of the NVIDIA Nsight Compute version (`ncu-report-skill`) that targeted B200 / sm_100. The directory layout, six-dimension structure, and report template were proven on NVIDIA kernels and have been re-grounded against the AMD ROCm 7.x profiling stack here. Folder name kept as `ncu-report-skill` only to preserve existing parent-repo symlinks — the skill's actual identity is `rocprof-report-skill`.
+> **Heritage:** this skill is a 1:1 port of the NVIDIA Nsight Compute version that targeted B200 / sm_100. The directory layout, six-dimension structure, and report template were proven on NVIDIA kernels and have been re-grounded against the AMD ROCm 7.x profiling stack here.
 
 ---
 
@@ -60,7 +60,7 @@ Three ways to install this skill:
 Keeps the skill version-controlled and easy to update; edits in the clone are picked up instantly.
 
 ```bash
-git clone git@github.com:zhenhuang12/ncu-report-skill.git ~/workspace/rocprof-report-skill
+git clone git@github.com:zhenhuang12/rocprof-report-skill.git ~/workspace/rocprof-report-skill
 
 mkdir -p ~/.claude/skills
 ln -s ~/workspace/rocprof-report-skill ~/.claude/skills/rocprof-report-skill
@@ -76,7 +76,7 @@ Pull updates with `cd ~/workspace/rocprof-report-skill && git pull`. The symlink
 ### Option 2 — Copy into place
 
 ```bash
-git clone git@github.com:zhenhuang12/ncu-report-skill.git /tmp/rps
+git clone git@github.com:zhenhuang12/rocprof-report-skill.git /tmp/rps
 mkdir -p ~/.claude/skills
 cp -r /tmp/rps ~/.claude/skills/rocprof-report-skill
 ```
@@ -85,7 +85,7 @@ cp -r /tmp/rps ~/.claude/skills/rocprof-report-skill
 
 ```bash
 cd /path/to/other-repo
-git submodule add git@github.com:zhenhuang12/ncu-report-skill.git .claude/skills/rocprof-report-skill
+git submodule add git@github.com:zhenhuang12/rocprof-report-skill.git .claude/skills/rocprof-report-skill
 git commit -m "Add rocprof-report-skill as a submodule"
 ```
 

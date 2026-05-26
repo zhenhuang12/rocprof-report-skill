@@ -13,8 +13,8 @@ Reusable code for AMD profiling harnesses and rocprof / rocprof-compute report a
 
 ```bash
 cd profile/<run_name>/harness/
-cp /path/to/skills/ncu-report-skill/helpers/harness_template.hip my_kernel_harness.hip
-cp /path/to/skills/ncu-report-skill/helpers/safetensors_loader.h .
+cp /path/to/skills/rocprof-report-skill/helpers/harness_template.hip my_kernel_harness.hip
+cp /path/to/skills/rocprof-report-skill/helpers/safetensors_loader.h .
 # edit my_kernel_harness.hip to include your kernel + fill in main()
 hipcc -O3 -std=c++17 -gline-tables-only \
       --offload-arch=gfx942 -munsafe-fp-atomics \
@@ -37,7 +37,7 @@ For MI355X (gfx950), use `--offload-arch=gfx950` and ROCm 7+.
 
 ```bash
 export PROFILE_RUN_DIR=profile/<run_name>
-HELPERS=/path/to/skills/ncu-report-skill/helpers
+HELPERS=/path/to/skills/rocprof-report-skill/helpers
 export FIB_DATASET_PATH=/path/to/flashinfer-trace  # if using FIB workloads
 
 # (Optional) Browse workload shapes for a flashinfer-trace dataset
