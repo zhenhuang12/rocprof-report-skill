@@ -76,14 +76,14 @@ def _resolve_kernel_trace(rpc_dir: Path, tag: str, explicit: Path | None) -> Pat
     if search_root is None:
         return None
     candidates = []
-    # rocprofv3 --kernel-trace -d <out> defaults to nesting under
-    # <out>/<hostname>/<pid>_kernel_trace.csv; passing --output-file <prefix>
-    # collapses to flat <out>/<prefix>_kernel_trace.csv. rocprof-compute adds
-    # a further <out>/pmc_<N>/<host>/<pid>_kernel_trace.csv wrapping. Glob
-    # both the flat and the nested forms.
-    candidates.extend(sorted(search_root.glob(f"trace_{tag}/kernel_trace.csv")))
+    # rocprofv3 always emits the trace CSV with a name prefix — never a bare
+    # `kernel_trace.csv`. Default `-d <out>` nests as
+    # `<out>/<hostname>/<pid>_kernel_trace.csv`; `--output-file <prefix>`
+    # collapses to flat `<out>/<prefix>_kernel_trace.csv`. When rocprof-compute
+    # wraps the call its raw layer adds a further
+    # `<out>/out/pmc_<N>/<hostname>/<pid>_kernel_trace.csv` (`<N>` per PMC group).
+    # Glob the prefixed flat form plus all nested depths.
     candidates.extend(sorted(search_root.glob(f"trace_{tag}/*_kernel_trace.csv")))
-    candidates.extend(sorted(search_root.glob(f"trace_{tag}/**/kernel_trace.csv")))
     candidates.extend(sorted(search_root.glob(f"trace_{tag}/**/*_kernel_trace.csv")))
     return candidates[0] if candidates else None
 
@@ -115,8 +115,11 @@ def collect(rpc_dir: Path, tag: str, analysis_dir: Path, kernel_regex, arch,
         print(f"[{tag}] {rpc_dir}: {n_disp} dispatch(es), total duration {dur_ns/1e3:.2f} µs, arch={arch_used}")
     elif ktrace is None:
         print(f"[{tag}] {rpc_dir}: {n_disp} dispatch(es), duration n/a "
-              f"(no kernel_trace.csv — pass --kernel-trace or place one at "
-              f"{rpc_dir.parent}/trace_{tag}/kernel_trace.csv), arch={arch_used}")
+              f"(no kernel_trace.csv — pass --kernel-trace or run `rocprofv3 "
+              f"--kernel-trace -d {rpc_dir.parent}/trace_{tag} ...`; resulting "
+              f"file lands at trace_{tag}/<hostname>/<pid>_kernel_trace.csv by "
+              f"default or trace_{tag}/<prefix>_kernel_trace.csv with "
+              f"--output-file <prefix>), arch={arch_used}")
     else:
         print(f"[{tag}] {rpc_dir}: {n_disp} dispatch(es), duration n/a "
               f"(kernel_trace.csv at {ktrace} had no matching dispatches), arch={arch_used}")

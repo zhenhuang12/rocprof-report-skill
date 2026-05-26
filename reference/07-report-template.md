@@ -270,4 +270,4 @@ Minimal runnable command listing:
 - ❌ Re-running the same profile with different tags and copy-pasting the same analysis — consolidate.
 - ❌ Reporting from the rocprof-compute terminal table directly. Extract, interpret, write — don't dump.
 - ❌ Omitting the setup section. Without it, nobody can reproduce or trust the numbers.
-- ❌ Confusing CDNA3 (MI300X) and CDNA4 (MI355X) counters — they share most names but differ in MFMA shapes (block-scaled `F6F4` + `XF32` added on CDNA4, TF32 removed), FP64 throughput (halved on CDNA4), and HBM (HBM3 → HBM3E). The 256 MB Infinity Cache is retained on both. Neither has `TCC_EA1_*` (single EA channel per XCD).
+- ❌ Confusing CDNA3 (MI300X) and CDNA4 (MI355X) counters — they share most names but differ in MFMA shapes (block-scaled `F6F4` added on CDNA4; `XF32` is retained from CDNA3, and AMD has no separate TF32 type to "remove"), FP64 throughput (halved on CDNA4), and HBM (HBM3 → HBM3E). The 256 MB Infinity Cache is retained on both. Neither has `TCC_EA1_*` (single EA channel per XCD).

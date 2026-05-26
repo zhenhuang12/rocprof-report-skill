@@ -387,8 +387,25 @@ def detect_arch(rpc):
 
 # --- Aggregate counter dumps ------------------------------------------------
 
+# Per-dispatch geometry/identity columns that pmc_perf.csv carries alongside
+# the actual hardware counters. Summing these across dispatches produces
+# nonsense (e.g. summed Grid_Size or Arch_VGPR), so we report them under a
+# distinct "geometry::" namespace and use first/mean rather than sum.
+_GEOMETRY_COLS = frozenset({
+    "Dispatch_ID", "Kernel_Name", "GPU_ID", "Queue_ID", "PID", "TID",
+    "Correlation_ID", "Start_Timestamp", "End_Timestamp",
+    "Grid_Size", "Workgroup_Size", "LDS_Per_Workgroup",
+    "Scratch_Per_Workitem", "Arch_VGPR", "Accum_VGPR", "SGPR", "Wave_Size",
+})
+
+
 def dump_all_counters(rpc, outpath):
     """Dump every counter sum from pmc_perf.csv to a JSON file.
+
+    Hardware counters are summed across dispatches under `pmc_perf::<col>`.
+    Per-dispatch geometry/identity columns (Grid_Size, Arch_VGPR, ...) are
+    reported separately under `geometry::<col>` as the first row's value —
+    summing them would be meaningless.
 
     Returns the number of entries written.
     """
@@ -399,7 +416,12 @@ def dump_all_counters(rpc, outpath):
             if col in ("Dispatch_ID", "Kernel_Name"):
                 continue
             try:
-                if pd.api.types.is_numeric_dtype(pmc[col]):
+                if col in _GEOMETRY_COLS:
+                    val = pmc[col].iloc[0]
+                    rows[f"geometry::{col}"] = (
+                        float(val) if pd.api.types.is_numeric_dtype(pmc[col]) else str(val)
+                    )
+                elif pd.api.types.is_numeric_dtype(pmc[col]):
                     rows[f"pmc_perf::{col}"] = float(pmc[col].sum())
                 else:
                     rows[f"pmc_perf::{col}"] = str(pmc[col].iloc[0])
@@ -422,7 +444,14 @@ def dump_key_counters(rpc, arch, outpath_json, outpath_txt=None):
         v = None
         if pmc is not None and not pmc.empty and k in pmc.columns:
             try:
-                v = float(pmc[k].sum()) if pd.api.types.is_numeric_dtype(pmc[k]) else str(pmc[k].iloc[0])
+                if k in _GEOMETRY_COLS:
+                    # Per-dispatch geometry — report first-row value, not sum.
+                    v = (float(pmc[k].iloc[0]) if pd.api.types.is_numeric_dtype(pmc[k])
+                         else str(pmc[k].iloc[0]))
+                elif pd.api.types.is_numeric_dtype(pmc[k]):
+                    v = float(pmc[k].sum())
+                else:
+                    v = str(pmc[k].iloc[0])
             except Exception as e:
                 v = f"<error: {e}>"
         out[k] = v
@@ -631,11 +660,12 @@ def parse_analyze_text(path):
     """
     # rocprof-compute marks sections by either the legacy dotted form
     # ("2.1.15 Memory — vL1 Cache", with 2+ dots) or the current top-level
-    # integer block ID ("15. L1D Cache" / "15 L1D Cache"). Match both, but
-    # require either 2+ dots OR a 1-3 digit integer followed by a period
-    # to avoid eating "3.14 ms" / "4.5e-3" data rows.
+    # integer block ID ("15. L1D Cache"). Require either 2+ dots OR a 1-3
+    # digit integer FOLLOWED BY a literal period — `\d{1,3}\.?` would also
+    # match bare integers like "3 dispatches" / "15 kernels" and silently
+    # reclassify data rows as new section headers.
     section_re = re.compile(
-        r"^((?:\d+(?:\.\d+){2,})|(?:\d{1,3}\.?))\s+\S"
+        r"^((?:\d+(?:\.\d+){2,})|(?:\d{1,3}\.))\s+\S"
     )
     out = {}
     current = None

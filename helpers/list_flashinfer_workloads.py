@@ -156,6 +156,14 @@ def safetensors_path_for(dataset: Path, workload: dict) -> Path | None:
                 # prefixes too; use removeprefix to strip only the literal
                 # leading "./".
                 rel = rel.removeprefix("./")
+                # Reject absolute paths — `dataset / "/abs"` silently discards
+                # the dataset root (pathlib treats an absolute RHS as the new
+                # base), letting a malformed jsonl entry escape the dataset.
+                if Path(rel).is_absolute():
+                    print(f"[warn] skipping absolute safetensors path "
+                          f"in workload {workload.get('workload', {}).get('uuid', '?')}: "
+                          f"{rel!r}", file=sys.stderr)
+                    return None
                 abs_path = dataset / rel
                 return abs_path.resolve()
     return None
