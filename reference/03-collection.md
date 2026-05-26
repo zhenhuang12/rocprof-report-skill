@@ -222,7 +222,7 @@ rocprofv3 --att \
 | `--att-shader-engine-mask` | 32-bit bitmask of SEs to enable. **On MI3xx (gfx942/gfx950) each hex nibble selects SEs within one XCD** (MI300X has 8 XCDs × 4 SEs = 32 bits): `0x1` = one SE on XCD0 (conservative default — recommended starting point), `0x11111111` = one SE per XCD across all 8 XCDs (good coverage without overflow), `0xFFFFFFFF` = all 4 SEs on all XCDs (max coverage; upstream warns this risks dropped packets / buffer overflow). Bump cautiously and watch for truncation. |
 | `--att-buffer-size` | Per-SE trace buffer in bytes. The upstream thread-trace docs cite a typical value of `0x6000000` (96 MB), with a supported range of 1 MB – 2 GB; the value above matches that. Bump it (e.g. `0x40000000` = 1 GB) only if traces report truncation. |
 
-Output: per-SE JSON / binary traces; open with ROCprof Compute Viewer or process programmatically via the `att_tool` JSON. Source attribution requires `-gline-tables-only`/`-g`.
+Output (after `rocprof-trace-decoder` runs automatically inside rocprofv3 — bundled in ROCm ≥ 7.13; install the `rocprof-trace-decoder` package or pass `--att-library-path <dir>` on older ROCm): `att_<tag>/stats_*.csv` (per-instruction latency / stall / idle summary), `att_<tag>/ui_output_agent_<id>_dispatch_<id>/*.json` (UI tree), raw `.att` SQTT binaries, and `.out` code-object copies. Open the `ui_output_*/` tree with **`rocprof-compute-viewer`**, or aggregate the JSONs programmatically via `rglob("att_<tag>/**/*.json")`. Source attribution requires `-gline-tables-only`/`-g`.
 
 ---
 
