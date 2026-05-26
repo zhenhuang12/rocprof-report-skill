@@ -27,11 +27,13 @@ The helpers degrade gracefully if `rocpd` isn't importable — they fall back to
 `rocprof-compute profile -p <dir>` writes a directory; with an explicit `-p` and
 the default `--subpath gpu`, key files land **flat directly under `-p`** (the
 default `"gpu"` matches neither of the two `subpath` branches in
-`rocprof_compute_base.py`). Opt-in nested layouts (`--subpath gpu_model` →
-`<gpu_model>/` child, `--subpath node_name` → `<hostname>/` child, or omitting
-`-p` entirely → auto `<name>/<gpu_model>/`) are also handled by the helpers via
-a one-level glob fallback. `RPC_DIR` below means *the dir that actually holds
-`pmc_perf.csv`*:
+`rocprof_compute_base.py`). Opt-in one-level nested layouts (`--subpath gpu_model`
+→ `<gpu_model>/` child, `--subpath node_name` → `<hostname>/` child) are also
+handled by the helpers via a one-level glob fallback. The fully-omitted-`-p`
+case (auto `<cwd>/workloads/<name>/<gpu_model>/`) produces a two-level nest;
+this skill's workflow always passes `-p`, but if you hit that case pass the
+inner `workloads/<name>/` dir. `RPC_DIR` below means *the dir that actually
+holds `pmc_perf.csv`*:
 
 ```
 rpc_<tag>/                       ← the `-p` value you passed
@@ -49,9 +51,11 @@ rpc_<tag>/                       ← the `-p` value you passed
 
 Notes:
 - Default `--subpath gpu` is flat: artifacts live directly under `<-p>/`. If you
-  opted into a nested layout (`--subpath gpu_model` or omitted `-p`), they sit
-  one level deeper under `<gpu_model>/`; the helpers in `$SKILL/helpers/` glob
-  for either form, so you don't have to know which one you used.
+  opted into a nested layout (`--subpath gpu_model` or `--subpath node_name`),
+  they sit one level deeper under `<gpu_model>/` or `<hostname>/`; the helpers
+  in `$SKILL/helpers/` glob for either form, so you don't have to know which
+  one you used. (The omitted-`-p` two-level auto-nest is not handled by the
+  one-level glob — pass the inner `workloads/<name>/` dir if you hit it.)
 - There is no `SoC/` subdir — every counter lives in `pmc_perf.csv`.
 
 ```python
@@ -61,7 +65,7 @@ from pathlib import Path
 RUN = os.environ["PROFILE_RUN_DIR"]
 RPC_TOP = Path(f"{RUN}/reports/rpc_<tag>")
 # Default flat layout: `pmc_perf.csv` is directly under `-p`. If you opted into
-# `--subpath gpu_model` (or omitted `-p`), fall back to the one-level glob.
+# `--subpath gpu_model` / `--subpath node_name`, fall back to the one-level glob.
 RPC_DIR = RPC_TOP if (RPC_TOP / "pmc_perf.csv").exists() else \
           (sorted(RPC_TOP.glob("*/pmc_perf.csv"))[0].parent
            if list(RPC_TOP.glob("*/pmc_perf.csv")) else RPC_TOP)

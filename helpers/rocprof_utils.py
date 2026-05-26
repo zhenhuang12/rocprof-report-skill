@@ -59,10 +59,15 @@ def _resolve_workload_dir(rpc_dir: Path) -> Path:
 
     Default rocprof-compute (explicit `-p`, `--subpath gpu`) writes flat
     directly under `<-p>`, so the common case is `rpc_dir/pmc_perf.csv`.
-    If the caller opted into a nested layout (`--subpath gpu_model`,
-    `--subpath node_name`, or omitted `-p` entirely so the auto
-    `<name>/<gpu_model>/` append fires), we glob one level down to find
-    the real workload dir.
+    If the caller opted into a one-level nested layout (`--subpath gpu_model`
+    → `<gpu_model>/` child, or `--subpath node_name` → `<hostname>/` child),
+    we glob one level down to find the real workload dir.
+
+    Note: the fully-omitted-`-p` case (rocprof-compute auto-appends
+    `<name>/<gpu_model>/` under `<cwd>/workloads/`) produces a two-level
+    nest and is NOT handled here — this skill's workflow always passes
+    `-p` (Phase 0 exports `PROFILE_RUN_DIR`), so if you hit that case
+    pass the inner `workloads/<name>/` dir, not the top `workloads/`.
     """
     if (rpc_dir / "pmc_perf.csv").exists():
         return rpc_dir
