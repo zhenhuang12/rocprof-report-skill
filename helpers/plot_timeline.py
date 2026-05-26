@@ -1,20 +1,24 @@
 #!/usr/bin/env python3
-"""ASCII-plot rocprof-compute timeseries and per-CU activity.
+"""ASCII-plot rocprof-compute per-CU activity (and legacy timeseries CSV).
 
 Two data sources are supported:
 
-1. **rocprof-compute timeseries** (added in ROCm 6.3): writes one row per
-   PMC sample instead of one row per kernel. Enable at collection time:
-       rocprof-compute profile --timeseries-sampling-rate 1ms \\
-           -p $PROFILE_RUN_DIR/reports/rpc_ts_<tag> -- ./harness
-   Output: `pmc_perf_timeseries.csv` with column `Sample_Time_ns` + each
-   counter as a column. Minimum interval ~1 ms vs NVIDIA PM ~2 µs — for
-   sub-millisecond kernels, use ATT instead.
+1. **Per-CU SQ_WAVES distribution** from a regular `pmc_perf.csv` (preferred,
+   currently working): not a true timeseries, but reveals per-CU imbalance and
+   tail effects. Needs a per-CU counter column (e.g. `SQ_WAVES_CU<N>`); some
+   ROCm builds only expose chip-wide aggregates, in which case this mode
+   degrades gracefully.
 
-2. **Per-CU SQ_WAVES distribution** from a regular `pmc_perf.csv`: not a
-   true timeseries, but reveals per-CU imbalance and tail effects. Needs a
-   per-CU counter column (e.g. `SQ_WAVES_CU<N>`); some ROCm builds only
-   expose chip-wide aggregates, in which case this mode is a no-op.
+2. **Legacy `pmc_perf_timeseries.csv`** — accepted via `--timeseries` if the
+   file exists, but no current `rocprof-compute` invocation produces it:
+   `--timeseries-sampling-rate` is NOT a real `rocprof-compute profile` flag
+   (verify with `rocprof-compute profile --help`). The supported windowed-PMC
+   capture is `rocprofv3 -P 0:<dur>:<repeat>` (Recipe 2b in
+   `reference/03-collection.md`), which writes one
+   `*_counter_collection.csv` per window — stitch them in pandas with a
+   `window_idx` column rather than passing them to this helper. The
+   `--timeseries` path is kept only for downstream tools that might still
+   emit the legacy CSV; it will print a clear stderr warning if invoked.
 
 Produces `<run-dir>/analysis/timeline_plots_<tag1>_<tag2>_....txt` (one file per
 invocation, suffix derived from --tag) with ASCII plots for each
@@ -205,6 +209,16 @@ def main():
     if len(sources) != len(args.tag):
         ap.error("Total --timeseries + --rpc count must equal --tag count")
 
+    if args.timeseries:
+        print(
+            "[warn] --timeseries expects a pmc_perf_timeseries.csv that current "
+            "rocprof-compute does not emit (--timeseries-sampling-rate is not a "
+            "real flag). Use `rocprofv3 -P` windowed capture (Recipe 2b) and "
+            "stitch the per-window CSVs in pandas, or pass --rpc <dir> --per-cu "
+            "instead. Continuing in case you have a legacy CSV...",
+            file=sys.stderr,
+        )
+
     counters = args.counter or DEFAULT_COUNTERS
 
     analysis_dir = args.run_dir / "analysis"
@@ -226,9 +240,12 @@ def main():
                     out_lines.extend(plot_timeseries_csv(cand, counters, args.rows, args.cols))
                 else:
                     out_lines.append(
-                        f"\n{src}: no pmc_perf_timeseries.csv. Re-run with "
-                        f"`rocprof-compute profile --timeseries-sampling-rate 1ms ...`, "
-                        f"or pass --per-cu to plot per-CU distribution instead."
+                        f"\n{src}: no pmc_perf_timeseries.csv. `rocprof-compute "
+                        f"profile` has no --timeseries-sampling-rate flag in current "
+                        f"ROCm; collect a windowed PMC pass with `rocprofv3 -P "
+                        f"0:1:50 --collection-period-unit msec ...` instead (see "
+                        f"Recipe 2b), or pass --per-cu here to plot per-CU "
+                        f"distribution from the static pmc_perf.csv."
                     )
         else:
             out_lines.extend(plot_timeseries_csv(src, counters, args.rows, args.cols))

@@ -148,15 +148,14 @@ python3 "$SKILL/helpers/plot_timeline.py" \
     --run-dir "$PROFILE_RUN_DIR" \
     --rpc "$PROFILE_RUN_DIR/reports/rpc_<tag>" --tag <tag> --per-cu
 
-# … or from a rocprof-compute timeseries CSV (collect with
-# `rocprof-compute profile --timeseries-sampling-rate 1ms ...`)
-# NOTE: plot_timeline.py writes a single `analysis/timeline_plots.txt` per
-# invocation and OVERWRITES on each call. To compare multiple tags, pass
-# `--timeseries ... --tag ...` pairs in one invocation (both args repeat).
-python3 "$SKILL/helpers/plot_timeline.py" \
-    --run-dir "$PROFILE_RUN_DIR" \
-    --timeseries "$PROFILE_RUN_DIR/reports/rpc_ts_<tag1>/pmc_perf_timeseries.csv" --tag <tag1> \
-    --timeseries "$PROFILE_RUN_DIR/reports/rpc_ts_<tag2>/pmc_perf_timeseries.csv" --tag <tag2>
+# NOTE: plot_timeline.py's --timeseries path expects a single
+# `pmc_perf_timeseries.csv` that current rocprof-compute does NOT emit
+# (--timeseries-sampling-rate is not a real flag — verify with
+# `rocprof-compute profile --help`). For the windowed PMC pass via
+# `rocprofv3 -P` (Recipe 2b in reference/03-collection.md), stitch the per-window
+# `*_counter_collection.csv` files in pandas by hand (see reference/04-python-api.md).
+# plot_timeline.py writes `analysis/timeline_plots_<tag_suffix>.txt`, one file per
+# invocation, suffixed by the joined --tag values (and warns if overwriting).
 
 # Browse a flashinfer-trace dataset to pick workload shapes
 export FIB_DATASET_PATH=/path/to/flashinfer-trace

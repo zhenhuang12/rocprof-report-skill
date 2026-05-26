@@ -177,9 +177,12 @@ python3 "$SKILL/helpers/analyze_reports.py" --run-dir "$PROFILE_RUN_DIR" \
 python3 "$SKILL/helpers/extract_stall_hotspots.py" --run-dir "$PROFILE_RUN_DIR" \
     --pcsamp-dir "$PROFILE_RUN_DIR/reports/pcsamp_<tag>" --tag <tag>
 
-# ASCII timeline (requires the optional --timeseries-sampling-rate pass — see Recipe 2b)
+# ASCII timeline — see Recipe 2b. `rocprof-compute` has NO `--timeseries-sampling-rate`
+# flag; use `rocprofv3 -P` windowed capture instead. The helper's --timeseries path
+# currently expects a single CSV that the supported pipeline does not produce, so until
+# the helper is updated prefer --per-cu on the Recipe-2 pmc_perf.csv.
 python3 "$SKILL/helpers/plot_timeline.py" --run-dir "$PROFILE_RUN_DIR" \
-    --timeseries "$PROFILE_RUN_DIR/reports/rpc_ts_<tag>/pmc_perf_timeseries.csv" --tag <tag>
+    --rpc "$PROFILE_RUN_DIR/reports/rpc_<tag>" --tag <tag> --per-cu
 
 # rocprof-compute's own section dump (SoL / per-block summaries with peak-comparison hints)
 rocprof-compute analyze -p "$PROFILE_RUN_DIR/reports/rpc_<tag>" \
@@ -196,7 +199,7 @@ Work through the six analysis dimensions — see [`05-analysis-dimensions.md`](0
 
 1. **CU occupancy & wave structure** — are enough workgroups launched to fill the chip (304 CUs = 8 XCDs × 38 CUs over 4 IODs on MI300X; 256 CUs = 8 XCDs × 32 CUs over 2 IODs on MI355X)? Is occupancy register- / LDS- / workgroup-limited?
 2. **Workgroup balance (tail effect)** — do per-CU / per-XCD active cycles match? Does the PMC timeline show a clean drop or a gradual tail?
-3. **Instruction-level stall analysis** — what wait reason dominates? On gfx942 / gfx950 the only PMC wait counters are `SQ_WAIT_ANY`, `SQ_WAIT_INST_ANY`, and `SQ_WAIT_INST_LDS`; the granular wait-reason breakdown lives in the **stochastic** PC-sampling CSV's `Stall_Reason` column (`rocprofv3 --pc-sampling-method stochastic --pc-sampling-unit cycles`), with values from `ROCPROFILER_PC_SAMPLING_INSTRUCTION_NOT_ISSUED_REASON_*` — `WAITCNT`, `ALU_DEPENDENCY`, `BARRIER_WAIT`, `ARBITER_NOT_WIN`, `ARBITER_WIN_EX_STALL`, `INTERNAL_INSTRUCTION`, `NO_INSTRUCTION_AVAILABLE`, `OTHER_WAIT`, `SLEEP_WAIT`. The `host_trap` mode does NOT populate `Stall_Reason` — use it for per-line hotspots only. Which source line generates it?
+3. **Instruction-level stall analysis** — what wait reason dominates? On gfx942 / gfx950 the only PMC wait counters are `SQ_WAIT_ANY`, `SQ_WAIT_INST_ANY`, and `SQ_WAIT_INST_LDS`; the granular wait-reason breakdown lives in the **stochastic** PC-sampling CSV's `Stall_Reason` column (`rocprofv3 --pc-sampling-method stochastic --pc-sampling-unit cycles`), with values from `ROCPROFILER_PC_SAMPLING_INSTRUCTION_NOT_ISSUED_REASON_*` — `NONE` (sentinel — should not appear on stalled rows), `WAITCNT`, `ALU_DEPENDENCY`, `BARRIER_WAIT`, `ARBITER_NOT_WIN`, `ARBITER_WIN_EX_STALL`, `INTERNAL_INSTRUCTION`, `NO_INSTRUCTION_AVAILABLE`, `OTHER_WAIT`, `SLEEP_WAIT`. The `host_trap` mode does NOT populate `Stall_Reason` — use it for per-line hotspots only. Which source line generates it?
 4. **Matrix-Core utilization** — if this is a GEMM-ish kernel, are MFMA instructions actually being issued (`SQ_INSTS_VALU_MFMA_MOPS_<dtype>` / `SQ_VALU_MFMA_BUSY_CYCLES`)?
 5. **CU utilization timeline** — flat high, flat low, periodic waves, gradual tail?
 6. **Memory access pattern** — bytes/wavefront, vL1/L2 hit rates, HBM throughput, LDS bank conflicts, register/scratch spill.

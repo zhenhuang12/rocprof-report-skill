@@ -67,9 +67,10 @@ python3 $SKILL/helpers/extract_stall_hotspots.py --run-dir $PROFILE_RUN_DIR \
 python3 $SKILL/helpers/extract_stall_hotspots.py --run-dir $PROFILE_RUN_DIR \
     --att-dir $PROFILE_RUN_DIR/reports/att_<tag> --tag <tag>
 
-# ASCII timeline plots — needs --timeseries-sampling-rate at collection time
-python3 $SKILL/helpers/plot_timeline.py --run-dir $PROFILE_RUN_DIR \
-    --timeseries $PROFILE_RUN_DIR/reports/rpc_ts_<tag>/pmc_perf_timeseries.csv --tag <tag>
+# ASCII timeline plots — the --timeseries path expects a single CSV that current
+# rocprof-compute does NOT emit (--timeseries-sampling-rate is not a real flag).
+# Until the helper is updated to read the rocprofv3 -P window layout, prefer the
+# --per-cu path on the Recipe-2 pmc_perf.csv.
 
 # Per-CU distribution (no timeseries needed)
 python3 $SKILL/helpers/plot_timeline.py --run-dir $PROFILE_RUN_DIR \

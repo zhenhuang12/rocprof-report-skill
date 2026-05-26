@@ -456,8 +456,9 @@ These are the patterns that consistently produce well-performing CDNA kernels �
 - CDNA4: FP8 (OCP standard), FP6, FP4, MXFP — up to 4× peak vs BF16.
 - Calibration / scale management matters; use AMD's quantizer or Marlin-style scales.
 
-### 15. Don't expect TF32 / FP64 magic on CDNA4
-- TF32 removed; FP64 halved. If your algorithm needs FP64, MI300X is the better target.
+### 15. FP64 halved on CDNA4 — pick the right GPU
+- FP64 throughput is **halved** on gfx950 vs gfx942; if your algorithm needs FP64-dense math, MI300X is the better target.
+- AMD has no separate TF32 type — the analog is **XF32** MFMA, which is **retained on CDNA4** (same shapes, same peak FLOPS as CDNA3; counter `SQ_INSTS_VALU_MFMA_MOPS_XF32`). See the arch additions table above.
 
 ### 16. Use rocprof-compute SoL as the first signal
 - The SoL block (`rocprof-compute analyze -p <dir> -b 2`, formerly §2.1.1) names the bottleneck subsystem and gives a gap-to-peak number. Use that to decide whether to chase compute, memory BW, or latency.

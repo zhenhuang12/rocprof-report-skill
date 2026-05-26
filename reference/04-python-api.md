@@ -110,23 +110,30 @@ This is the AMD analog of `action.metric_names()` — it shows which counters we
 
 ---
 
-## Per-instance timeseries
+## Per-window PMC timeseries
 
-rocprof-compute supports a timeseries mode (added in ROCm 6.3) that writes one row per PMC sample instead of one row per kernel. Enable it at collection time:
+There is **no** `rocprof-compute profile --timeseries-sampling-rate` flag — that name was a fabrication from earlier drafts of this skill. Verify with `rocprof-compute profile --help`. The supported windowed-PMC primitive is `rocprofv3 -P`, which produces N separate per-window CSVs (see Recipe 2b in `03-collection.md`):
 
 ```bash
-rocprof-compute profile -n <name> --timeseries-sampling-rate 1ms \
-    -p $PROFILE_RUN_DIR/reports/rpc_ts_<tag> -- ./harness
+rocprofv3 --pmc SQ_BUSY_CYCLES SQ_INSTS_VALU TCC_EA0_RDREQ_sum GRBM_GUI_ACTIVE \
+    -P 0:1:50 --collection-period-unit msec \
+    --kernel-include-regex "my_kernel" -f csv \
+    -d $PROFILE_RUN_DIR/reports/rpc_ts_<tag> -- ./harness
 ```
 
-Then:
+Then stitch the per-window CSVs in pandas (window index = synthetic time axis):
 
 ```python
-import os, pandas as pd
+import os, glob, pandas as pd
 RUN = os.environ["PROFILE_RUN_DIR"]
-ts = pd.read_csv(f"{RUN}/reports/rpc_ts_<tag>/pmc_perf_timeseries.csv")
-# Columns include: Sample_Time_ns, plus each counter as a column
-import matplotlib  # or use the ASCII plotter in helpers/plot_timeline.py
+csvs = sorted(glob.glob(f"{RUN}/reports/rpc_ts_<tag>/*_counter_collection.csv"))
+frames = []
+for i, p in enumerate(csvs):
+    df = pd.read_csv(p)
+    df["window_idx"] = i
+    frames.append(df)
+ts = pd.concat(frames, ignore_index=True)
+# Each row is one window × kernel-dispatch. Pivot or aggregate as needed.
 ```
 
 For PC-sampling / ATT-style per-PC data (the AMD analog of NVIDIA's per-correlation-ID per-PC counts) you read **PC-sampling CSV** or **ATT JSON**:

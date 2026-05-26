@@ -81,8 +81,9 @@ profile/<run_name>/
 │   │   ├── profiling_config.yaml
 │   │   └── out/pmc_<N>/<host>/<pid>_*.csv   ← raw per-PMC-group passes
 │   ├── rpc_<tag2>/
-│   ├── rpc_ts_<tag1>/              ← (optional) rocprof-compute --timeseries-sampling-rate output
-│   │   └── pmc_perf_timeseries.csv ← consumed by plot_timeline.py / Dimension 5 (CU timeline)
+│   ├── rpc_ts_<tag1>/              ← (optional) `rocprofv3 -P` windowed output for timeline view
+│   │   └── <pid>_counter_collection.csv  ← one CSV per window; plot_timeline.py --per-cu
+│   │                                       is the currently supported timeline path
 │   ├── att_<tag1>/                 ← rocprofv3 --att output dir (JSON traces per CU)
 │   ├── att_<tag2>/
 │   ├── pcsamp_<tag1>/              ← rocprofv3 --pc-sampling output dir (CSV per kernel)
@@ -95,7 +96,7 @@ profile/<run_name>/
     ├── compare_<a>_vs_<b>.txt      ← side-by-side
     ├── details_<tag>.txt           ← rocprof-compute analyze section dump
     ├── stall_hotspots_<tag>.txt    ← per-line stall aggregation (from ATT / PC-sampling)
-    ├── timeline_plots.txt          ← ASCII time-series (from plot_timeline.py); one file per run, all tags concatenated
+    ├── timeline_plots_<tag_suffix>.txt ← ASCII time-series from plot_timeline.py; one file per invocation, suffix = joined --tag values
     └── raw_<tag>.csv               ← optional: cleaned PMC csv export
 ```
 
@@ -188,13 +189,15 @@ rocprof-compute profile -n <run_name>_<tag> \
     -p "$PROFILE_RUN_DIR/reports/rpc_<tag>" \
     -- "$PROFILE_RUN_DIR/harness/kernel_harness" [args]
 
-# (Optional) timeseries pass — required for Dimension 5 (CU timeline),
-# Pattern B (tail effect), and Pattern M (pipeline bubbles). Lands a separate
-# `pmc_perf_timeseries.csv` under the rpc_ts_<tag> directory; plot_timeline.py
-# / Dimension 5 consume it.
-rocprof-compute profile -n <run_name>_<tag>_ts \
-    -k "my_kernel" --timeseries-sampling-rate 1ms \
-    -p "$PROFILE_RUN_DIR/reports/rpc_ts_<tag>" \
+# (Optional) windowed PMC pass — used for Dimension 5 (CU timeline),
+# Pattern B (tail effect), and Pattern M (pipeline bubbles). Use `rocprofv3 -P`;
+# `rocprof-compute profile` has no `--timeseries-sampling-rate` flag (verify with
+# `rocprof-compute profile --help`). Each window lands as its own
+# `<pid>_counter_collection.csv` under rpc_ts_<tag>/.
+rocprofv3 --pmc SQ_BUSY_CYCLES SQ_INSTS_VALU TCC_EA0_RDREQ_sum GRBM_GUI_ACTIVE \
+    -P 0:1:50 --collection-period-unit msec \
+    --kernel-include-regex "my_kernel" -f csv \
+    -d "$PROFILE_RUN_DIR/reports/rpc_ts_<tag>" \
     -- "$PROFILE_RUN_DIR/harness/kernel_harness" [args]
 
 # ATT / per-line source attribution (analog of ncu --set source)

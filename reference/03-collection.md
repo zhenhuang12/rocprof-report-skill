@@ -105,25 +105,25 @@ For a browsable GUI, use the **ROCprof Compute Viewer** (the AMD analog of `ncu-
 
 ---
 
-## Recipe 2b: Timeseries collection (optional, required for CU timeline / tail-effect analysis)
+## Recipe 2b: Windowed PMC collection (optional, for CU timeline / tail-effect analysis)
 
-Recipe 2 averages PMCs over the whole kernel. To see the *shape* of utilization over time — pipeline bubbles, tail effect, ramp-up / ramp-down — collect a separate timeseries pass. Dimension 5 (CU timeline), Pattern B (tail effect from variable-length inputs), and Pattern M (pipeline bubbles) in the diagnosis playbook all consume this CSV. Skip if you don't need timeline analysis.
+Recipe 2 averages PMCs over the whole kernel. To see the *shape* of utilization over time — pipeline bubbles, tail effect, ramp-up / ramp-down — repeatedly sample PMCs over a series of short windows and post-process the result. Dimension 5 (CU timeline), Pattern B (tail effect from variable-length inputs), and Pattern M (pipeline bubbles) in the diagnosis playbook all benefit from a windowed view. Skip this recipe if a per-kernel average is enough.
+
+There is **no** `rocprof-compute profile --timeseries-sampling-rate` flag in current ROCm — verify with `rocprof-compute profile --help`. The supported primitive is `rocprofv3 -P/--collection-period <delay>:<dur>:<repeat>`, which collects N discrete profile windows that you stitch together.
 
 ```bash
-rocprof-compute profile -n <run_name>_<tag>_ts \
-    -k "KERNEL_SUBSTRING" \
-    --timeseries-sampling-rate 1ms \
-    -p $PROFILE_RUN_DIR/reports/rpc_ts_<tag> \
+# Collect 50 windows of 1 ms each (50 ms total wall coverage). Tune the second
+# triplet field to your kernel's duration; the unit is set by --collection-period-unit.
+rocprofv3 --pmc SQ_BUSY_CYCLES SQ_INSTS_VALU TCC_EA0_RDREQ_sum GRBM_GUI_ACTIVE \
+    -P 0:1:50 --collection-period-unit msec \
+    --kernel-include-regex "KERNEL_REGEX" -f csv \
+    -d $PROFILE_RUN_DIR/reports/rpc_ts_<tag> \
     -- ./harness [args]
 ```
 
-| Flag | Meaning |
-|---|---|
-| `--timeseries-sampling-rate` | Sample PMC counters at this interval. `1ms` is a sensible default for kernels in the 10 ms - 1 s range; drop to `100us` (= 0.1 ms) for sub-ms kernels; raise to `10ms` for very long ones. rocprof-compute's effective floor is ~1 ms (vs Nsight Compute / PM ~2 µs), so for very-short kernels prefer ATT instead. |
+Each window writes its own `*_counter_collection.csv` under the output directory. Concatenate them (preserving window index as a synthetic time axis) before feeding to `plot_timeline.py`. For very short kernels (sub-ms) `-P` granularity is too coarse — fall back to ATT for per-instruction temporal detail (see Recipe 3b) or to the per-CU spatial view (`plot_timeline.py --per-cu`) on the static Recipe-2 `pmc_perf.csv`.
 
-Output: in addition to the usual `pmc_perf.csv`, a `pmc_perf_timeseries.csv` lands under `$PROFILE_RUN_DIR/reports/rpc_ts_<tag>/`. Use `plot_timeline.py --timeseries <path-to-csv>` to render it.
-
-Why a separate run, not `-p` pointing at the same dir as Recipe 2: the timeseries pass adds substantial overhead and writes a different schema. Keeping the two runs separate also lets Recipe 2 stay cheap when you don't need a timeline.
+> **Heads-up:** at the time of writing, `plot_timeline.py --timeseries` still expects a single `pmc_perf_timeseries.csv`. Until the helper is updated to consume the `-P` window layout, the most reliable timeline signal comes from `--per-cu` on the Recipe-2 output or from ATT.
 
 ---
 

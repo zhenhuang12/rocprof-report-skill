@@ -76,7 +76,7 @@ Most kernels will match 2-4 patterns simultaneously. **Rank them by magnitude** 
 **Signals:**
 - Multi-workload: `max_seq_len / avg_seq_len > 3` in input distribution.
 - Per-CU active cycles span 5-100× between slowest and fastest CU (per-CU SQ_BUSY_CYCLES from `pmc_perf.csv`, or rocprof-compute's workgroup-balance breakdown when available).
-- PMC timeline shape: long gradual tail at the end (visible via `plot_timeline.py`; requires the `--timeseries-sampling-rate` collection pass — Recipe 2b in [`03-collection.md`](03-collection.md)).
+- PMC timeline shape: long gradual tail at the end (visible via `plot_timeline.py`; requires the windowed `rocprofv3 -P` collection pass — Recipe 2b in [`03-collection.md`](03-collection.md); `rocprof-compute profile` has no `--timeseries-sampling-rate` flag).
 - **Per-XCD divergence** on MI300X SPX: SQ_WAVES per XCD shows one XCD running 30%+ longer than the others.
 - `Total_Workgroups / (CU_count × waves_per_CU) > 1.05` with partial last wave (compute `Total_Workgroups` and `CU_count` as in Pattern A).
 
@@ -328,7 +328,7 @@ If `K < 16`: consider batching multiple iterations' results into a vectorized wr
 ## Pattern M — Pipeline bubbles (no compute/memory overlap)
 
 **Signals:**
-- PMC timeline of SQ_INSTS_VALU and TCC_EA0_RDREQ shows a sawtooth (high compute ↔ high HBM alternating; requires the `--timeseries-sampling-rate` collection pass — Recipe 2b in [`03-collection.md`](03-collection.md)).
+- PMC timeline of SQ_INSTS_VALU and TCC_EA0_RDREQ shows a sawtooth (high compute ↔ high HBM alternating; requires the windowed `rocprofv3 -P` collection pass — Recipe 2b in [`03-collection.md`](03-collection.md); `rocprof-compute profile` has no `--timeseries-sampling-rate` flag).
 - Stochastic PC-sampling `Stall_Reason == WAITCNT` on `global_load_*` / `flat_load_*` lines is high *and* HBM throughput is high (the only granular VMEM-wait classification on gfx942/gfx950 is from stochastic PC sampling, not PMC; the `host_trap` mode does not populate `Stall_Reason`).
 
 **Why:** kernel loads a tile, computes on it, loads next tile — single-buffered.

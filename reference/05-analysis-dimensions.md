@@ -83,22 +83,23 @@ last_wave_utilization_pct = last_wave_blocks / wkgs_in_flight * 100
 
 **What:** are workgroups finishing at roughly the same time, or do a few outliers drag out the kernel?
 
-> Requires the optional `--timeseries-sampling-rate` collection pass (Recipe 2b in [`03-collection.md`](03-collection.md)) for the timeline signal. The static `pmc_perf.csv` from Recipe 2 only gives the per-kernel average — it cannot reveal a tail.
+> Requires the optional windowed `rocprofv3 -P` collection pass (Recipe 2b in [`03-collection.md`](03-collection.md)) for the timeline signal — `rocprof-compute profile` has no `--timeseries-sampling-rate` flag in current ROCm. The static `pmc_perf.csv` from Recipe 2 only gives the per-kernel average — it cannot reveal a tail.
 
 **Counters / signals:**
 
 ```
 # Per-CU active-cycle distribution — not exposed as a dedicated rocprof-compute
-# section in current releases; the workgroup-balance breakdown shows up in the
-# CS / wavefront block (-b 5). For per-CU resolution, collect SQ_BUSY_CYCLES /
-# GRBM_GUI_ACTIVE manually and aggregate by CU.
+# section in current releases; the per-CU / per-XCD workgroup-balance breakdown
+# lives in the wavefront-launch block (-b 7; see Pattern A signal in
+# `08-mi300x-mi355x-counter-names.md`). For finer per-CU resolution, collect
+# SQ_BUSY_CYCLES / GRBM_GUI_ACTIVE manually and aggregate by CU.
 SQ_BUSY_CYCLES (per CU)
 GRBM_GUI_ACTIVE                       # global active cycles
 GRBM_CP_BUSY                          # cmd-processor busy
 # (SPI scheduling busy is exposed via the SPI block, not GRBM, on gfx942/gfx950 —
 # `rocprofv3 -L | grep SPI_` to enumerate per-install)
 
-# Timeseries (rocprof-compute --timeseries-sampling-rate)
+# Timeseries (windowed `rocprofv3 -P`; see Recipe 2b)
 SQ_WAVES                              # rises with workgroup dispatch, falls with completion
 SQ_INSTS_VALU
 SQ_WAIT_INST_ANY                      # broad instruction-issue stall (gfx942/gfx950 PMC)
@@ -280,7 +281,7 @@ GRBM_GUI_ACTIVE                        # for normalizing to total time
 **MI355X (CDNA4 / gfx950) MFMA notes:**
 
 - New block-scaled `F6F4` family added (`v_mfma_*_f6f4` / `v_mfma_scale_*` with E8M0 block-exponent operand), covering FP4 and FP6 storage formats. Canonical tile shapes are `16x16x128` and `32x32x64` for both the unscaled `v_mfma_f32_*_f8f6f4` and the scaled `v_mfma_scale_f32_*_f8f6f4` forms (see the table in [`../cdna3-cdna4-hip-programming.md`](../cdna3-cdna4-hip-programming.md)). Verified per-dtype PMC counters on gfx950 include `SQ_INSTS_VALU_MFMA_MOPS_F6F4` and `SQ_INSTS_VALU_MFMA_MOPS_XF32`; check `rocprofv3 -L | grep MFMA` for the exact suffix list your install exposes (raw `_F4` / `_F6` / `_MXFP4` / `_MXFP6` / `_MXFP8` are **not** distinct PMC counters on gfx950).
-- `XF32` (extended-FP32) MFMA exposed (`SQ_INSTS_VALU_MFMA_MOPS_XF32`); TF32 from prior gens does not exist on CDNA4.
+- `XF32` (extended-FP32) MFMA exposed (`SQ_INSTS_VALU_MFMA_MOPS_XF32`) — AMD's TF32-equivalent, retained from CDNA3 (same shapes, same peak FLOPS).
 - FP64 throughput **halved** vs CDNA3 — gfx950 is not the GPU for FP64-dense workloads.
 - 2:4 sparse MFMA variants added (check ISA documentation for exact opcodes).
 - FP8 switched from OCP-FNUZ (CDNA3) to OCP standard (CDNA4); numerics differ slightly.
@@ -293,9 +294,9 @@ GRBM_GUI_ACTIVE                        # for normalizing to total time
 
 **What:** how does CU utilization vary over the kernel's lifetime?
 
-> Requires the optional `--timeseries-sampling-rate` collection pass (Recipe 2b in [`03-collection.md`](03-collection.md)). The default Recipe 2 produces only per-kernel averages.
+> Requires the optional windowed `rocprofv3 -P` collection pass (Recipe 2b in [`03-collection.md`](03-collection.md)) — `rocprof-compute profile` has no `--timeseries-sampling-rate` flag. The default Recipe 2 produces only per-kernel averages.
 
-**Counters (rocprof-compute timeseries mode):**
+**Counters (windowed `rocprofv3 -P`; one row per window × kernel):**
 ```
 GRBM_GUI_ACTIVE                             # global active cycles (denominator for utilization)
 GRBM_COUNT                                  # total elapsed cycles since last reset
@@ -336,7 +337,8 @@ TCC_EA0_WRREQ_64B_sum
 # NOTE: there is NO `TCC_EA0_REQ` aggregate on gfx942/gfx950. For total L2
 # requests use `TCC_REQ_sum` (L2-side); for EA-side totals, sum the
 # `TCC_EA0_RDREQ_sum` + `TCC_EA0_WRREQ_sum` rows above.
-TCC_EA0_MEM_REQ_LATENCY                        # latency histogram (if collected)
+TCP_TCC_READ_REQ_LATENCY                       # TCP→TCC read-request latency (cycles)
+TCP_TCC_WRITE_REQ_LATENCY                      # TCP→TCC write-request latency (cycles)
 # Achieved HBM BW ≈ (TCC_EA0_RDREQ_32B_sum * 32 + TCC_EA0_WRREQ_64B_sum * 64) / kernel_time
 
 # L2 (TCC = Texture Cache (controlled by L2 on CDNA))

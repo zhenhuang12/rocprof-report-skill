@@ -188,7 +188,9 @@ _COMMON_SQ = [
     # Wave / instruction mix
     "SQ_WAVES", "SQ_INSTS", "SQ_INSTS_VALU", "SQ_INSTS_SALU",
     "SQ_INSTS_VMEM", "SQ_INSTS_VMEM_RD", "SQ_INSTS_VMEM_WR",
-    "SQ_INSTS_SMEM", "SQ_INSTS_FLAT", "SQ_INSTS_FLAT_LDS_ONLY",
+    "SQ_INSTS_SMEM", "SQ_INSTS_FLAT",
+    # NOTE: SQ_INSTS_FLAT_LDS_ONLY does NOT exist on gfx942/gfx950. The real
+    # LDS-traffic counters are SQ_INSTS_LDS and SQ_LDS_BANK_CONFLICT below.
     "SQ_INSTS_LDS", "SQ_INSTS_BRANCH", "SQ_INSTS_MFMA",
     "SQ_BUSY_CYCLES",
     "SQ_VALU_MFMA_BUSY_CYCLES",
@@ -225,13 +227,23 @@ _COMMON_HBM = [
     "TCC_EA0_RDREQ_sum", "TCC_EA0_RDREQ_32B_sum", "TCC_EA0_RDREQ_DRAM_sum",
     # HBM write
     "TCC_EA0_WRREQ_sum", "TCC_EA0_WRREQ_64B_sum", "TCC_EA0_WRREQ_DRAM_sum",
-    # Atomic / IO
+    # Atomic / IO. Bare TCC_EA0_{RD,WR}REQ_IO_sum do NOT exist on gfx942/gfx950
+    # — the verified IO-side counters are 32B-granular requests + credit-stall.
     "TCC_EA0_ATOMIC_sum",
-    "TCC_EA0_RDREQ_IO_sum", "TCC_EA0_WRREQ_IO_sum",
+    "TCC_EA0_RDREQ_IO_32B_sum",
+    "TCC_EA0_RDREQ_IO_CREDIT_STALL_sum",
+    "TCC_EA0_WRREQ_IO_CREDIT_STALL_sum",
 ]
 
 _COMMON_GRBM = [
-    "GRBM_GUI_ACTIVE", "GRBM_COUNT", "GRBM_CP_BUSY", "GRBM_SDMA_BUSY",
+    # Verified gfx942 / gfx950 set (rocprofv3 -L | grep '^GRBM_'). GRBM_SDMA_BUSY
+    # and GRBM_GDS_BUSY are NOT exposed on these gens — they appeared on older
+    # gfx (906/908). Use amd-smi / HIP trace for SDMA copy activity.
+    "GRBM_GUI_ACTIVE", "GRBM_COUNT", "GRBM_CP_BUSY",
+    "GRBM_CPC_BUSY", "GRBM_CPF_BUSY",
+    "GRBM_EA_BUSY", "GRBM_SPI_BUSY",
+    "GRBM_TA_BUSY", "GRBM_TC_BUSY",
+    "GRBM_UTCL2_BUSY",
 ]
 
 # Per-dtype MFMA op counts on gfx942 / gfx950 use the prefix
@@ -242,7 +254,9 @@ _COMMON_GRBM = [
 # `rocprofv3 -L | grep -i mfma` before extending these lists.
 #
 # CDNA3 (gfx942 / MI300X / MI300A). VERIFIED via `rocprofv3 -L | grep MFMA`
-# on gfx942: F16, BF16, F32, F64, I8, F8 (FNUZ), BF8, XF32 (TF32-equivalent).
+# on gfx942: F16, BF16, F32, F64, I8, F8 (FNUZ), XF32 (TF32-equivalent).
+# There is NO dedicated _BF8 counter — E5M2 inputs (and mixed f8_bf8 shapes)
+# are bucketed under SQ_INSTS_VALU_MFMA_MOPS_F8.
 MI300X_MFMA = [
     "SQ_INSTS_MFMA",                            # aggregate MFMA op count
     "SQ_INSTS_VALU_MFMA_MOPS_F16",
@@ -250,8 +264,7 @@ MI300X_MFMA = [
     "SQ_INSTS_VALU_MFMA_MOPS_F32",
     "SQ_INSTS_VALU_MFMA_MOPS_F64",
     "SQ_INSTS_VALU_MFMA_MOPS_I8",
-    "SQ_INSTS_VALU_MFMA_MOPS_F8",               # FNUZ on CDNA3, OCP standard on CDNA4
-    "SQ_INSTS_VALU_MFMA_MOPS_BF8",              # BF8/E5M2 inputs (paired with F8 in mixed_f8_bf8)
+    "SQ_INSTS_VALU_MFMA_MOPS_F8",               # all FP8 (E4M3+E5M2); FNUZ on CDNA3, OCP on CDNA4
     "SQ_INSTS_VALU_MFMA_MOPS_XF32",             # XF32 = TF32-equivalent; present on BOTH gfx942 and gfx950
 ]
 

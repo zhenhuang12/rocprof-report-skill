@@ -95,8 +95,8 @@ Minimal runnable command listing:
     │   │   ├── roofline.pdf                ← PDF when roofline ran (default-on; --no-roof to skip)
     │   │   ├── profiling_config.yaml
     │   │   └── out/pmc_<N>/<host>/<pid>_*.csv   ← raw per-PMC-group passes
-    │   ├── rpc_ts_<tag>/                   ← optional --timeseries-sampling-rate pass
-    │   │   └── pmc_perf_timeseries.csv     ← consumed by plot_timeline.py / Dimension 5
+    │   ├── rpc_ts_<tag>/                   ← optional `rocprofv3 -P` windowed PMC pass
+    │   │   └── <pid>_counter_collection.csv ← one CSV per window; see Recipe 2b
     │   ├── pcsamp_<tag>/                   ← rocprofv3 PC sampling output
     │   │   ├── <pid>_pc_sampling_stochastic.csv   ← stochastic mode: has the `Stall_Reason` column (use for breakdown)
     │   │   └── <pid>_pc_sampling_host_trap.csv    ← host_trap mode: per-line hotspots only (no `Stall_Reason`)
@@ -106,7 +106,7 @@ Minimal runnable command listing:
         ├── metrics_all_<tag>.json          ← every parsed counter, full archive
         ├── metrics_key_<tag>.{json,txt}    ← curated key metrics (helper writes both)
         ├── stall_hotspots_<tag>.txt        ← per-line stall aggregation (PC sampling / ATT)
-        ├── timeline_plots.txt              ← ASCII timeseries / per-CU plots (one file per run)
+        ├── timeline_plots_<tag_suffix>.txt ← ASCII per-CU / timeseries plots (one file per `plot_timeline.py` invocation; suffix = joined --tag values)
         └── compare_<tag1>_vs_<tag2>.txt
 
 ---

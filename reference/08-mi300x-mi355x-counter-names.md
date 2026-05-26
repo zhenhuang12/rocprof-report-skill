@@ -33,7 +33,7 @@ print('\n'.join(sorted(pd.read_csv('rpc_<tag>/pmc_perf.csv', nrows=1).columns)))
 | `TCC_EA_RDREQ_sum` | **`TCC_EA0_RDREQ_sum`** — single EA channel per XCD on gfx942/gfx950 (NO `TCC_EA1_*`) |
 | `TCC_EA_RDREQ_32B_sum` | **`TCC_EA0_RDREQ_32B_sum`** |
 | `TCC_EA_WRREQ_sum` | **`TCC_EA0_WRREQ_sum`** |
-| `TA_BUSY_avr` | **`TA_BUSY_avr_per_simd`** (or sum across SIMDs) |
+| `TA_BUSY_avr` | **`TA_BUSY_avr`** — same name; per-SIMD breakdown comes via rocprof-compute aggregates, not a `_per_simd` PMC |
 | `SQ_INSTS_MFMA` exists on gfx908+ | Same aggregate name; per-dtype detail moves to `SQ_INSTS_VALU_MFMA_MOPS_<DTYPE>` on gfx942+ (per-shape PMCs not stable across ROCm versions) |
 | `SQ_BUSY_CYCLES` (gfx9 family) | Same, but on MI300X read **`GRBM_GUI_ACTIVE`** for true GPU-wide active cycles (denominator) |
 | `SQ_INSTS_VALU_MFMA_MOPS_*` (no F6F4) | **gfx950 adds** `SQ_INSTS_VALU_MFMA_MOPS_F6F4` (block-scaled FP4/FP6 family). Note: `SQ_INSTS_VALU_MFMA_MOPS_XF32` exists on **both** gfx942 and gfx950 (AMD's XF32 = NVIDIA TF32 equivalent). Verify the exact suffix list with `rocprofv3 -L \| grep MFMA` |
@@ -74,7 +74,6 @@ SQ_INSTS_VMEM_RD                # vmem reads
 SQ_INSTS_VMEM_WR                # vmem writes
 SQ_INSTS_SMEM                   # scalar memory
 SQ_INSTS_FLAT                   # flat / generic addressing
-SQ_INSTS_FLAT_LDS_ONLY          # flat that ended up as LDS
 SQ_INSTS_LDS                    # LDS instructions
 SQ_INSTS_GDS                    # GDS (rarely used)
 SQ_INSTS_BRANCH                 # branches
@@ -181,8 +180,10 @@ TCC_EA0_WRREQ_64B_sum                 # 64B-granular writes
 TCC_EA0_RDREQ_DRAM_sum                # filtered to DRAM (excludes other agents)
 TCC_EA0_WRREQ_DRAM_sum
 TCC_EA0_ATOMIC_sum
-TCC_EA0_RDREQ_IO_sum                  # I/O (xGMI / PCIe) reads
-TCC_EA0_WRREQ_IO_sum
+TCC_EA0_RDREQ_CREDIT_STALL_sum        # cycles stalled waiting for read credits to EA
+TCC_EA0_WRREQ_CREDIT_STALL_sum        # cycles stalled waiting for write credits to EA
+# NOTE: bare `TCC_EA0_{RD,WR}REQ_IO_sum` (xGMI / PCIe split) is NOT a stable
+# PMC on gfx942/gfx950. Verify with `rocprofv3 -L | grep TCC_EA0`.
 ```
 
 Computed achieved HBM read BW (GB/s):
@@ -199,7 +200,6 @@ SQ_LDS_IDX_ACTIVE                     # indexed LDS accesses
 SQ_LDS_ATOMIC_RETURN                  # LDS atomics with return
 SQ_LDS_UNALIGNED_STALL                # unaligned LDS access stalls
 SQ_INSTS_LDS                          # LDS instruction count
-SQ_INSTS_FLAT_LDS_ONLY                # flat that became LDS
 ```
 
 ### Matrix-core / MFMA
