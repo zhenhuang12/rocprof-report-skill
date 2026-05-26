@@ -116,10 +116,12 @@ python3 "$SKILL/helpers/analyze_reports.py" \
     --run-dir "$RUN" \
     --rpc "$RUN/reports/rpc_<tag>" --tag <tag>
 
-# Per-line stall hotspots from PC-sampling CSV …
+# Per-line stall hotspots: --pcsamp-dir globs the rocprofv3 nested layout
+# (e.g. pmc_1/<host>/<pid>_pc_sampling_host_trap_v0.csv), so you don't have to
+# hardcode the exact filename. Use --pcsamp <file> only if you need a specific CSV.
 python3 "$SKILL/helpers/extract_stall_hotspots.py" \
     --run-dir "$RUN" \
-    --pcsamp "$RUN/reports/pcsamp_<tag>/pc_sampling_host_trap_v0.csv" --tag <tag>
+    --pcsamp-dir "$RUN/reports/pcsamp_<tag>" --tag <tag>
 
 # … or from ATT JSON traces
 python3 "$SKILL/helpers/extract_stall_hotspots.py" \

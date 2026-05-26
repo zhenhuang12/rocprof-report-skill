@@ -27,9 +27,11 @@ The helpers degrade gracefully if `rocpd` isn't importable — they fall back to
 ```
 rpc_<tag>/                ← when you pass `-p <dir>`, files land FLAT under it
 ├── pmc_perf.csv          ← all collected PMCs land here, one row per dispatch
+├── pmc_kernel_top.csv    ← top-K kernels by dispatch count / time (when present)
 ├── sysinfo.csv           ← wide single-row: gfx arch, ROCm version, CU count, partition, etc.
 ├── log.txt               ← rocprof-compute invocation log
 ├── profiling_config.yaml ← captured invocation config
+├── roofline.pdf          ← PDF when roofline ran (default-on; `--no-roof` to skip)
 ├── perfmon/              ← per-PMC-group .txt/.yaml input files (not analysis data)
 └── out/pmc_<N>/<host>/<pid>_{kernel_trace,counter_collection,agent_info}.csv
                            ← raw per-pass dumps before merge
@@ -67,7 +69,7 @@ if ktrace_glob:
     print(f"Total runtime: {(kt_k['End_Timestamp'] - kt_k['Start_Timestamp']).sum() / 1e3:.2f} µs")
 ```
 
-`pmc_perf.csv` columns vary by ROCm release — confirm with `pmc.columns.tolist()`. Verified launch columns: `Dispatch_ID, Grid_Size, Workgroup_Size, LDS_Per_Workgroup, Scratch_Per_Workitem, Arch_VGPR, Accum_VGPR, SGPR, Wave_Size, Kernel_Name, Kernel_ID, Correlation_ID` + each PMC counter as its own column. **There are no `VGPRs`/`SGPRs`/`AGPRs` plural columns and no `Start_Timestamp`/`End_Timestamp` columns** — use `Arch_VGPR`/`Accum_VGPR`/`SGPR` (singular) and read durations from `kernel_trace.csv`.
+`pmc_perf.csv` columns vary by ROCm release — confirm with `pmc.columns.tolist()`. Core launch columns present on all recent releases: `Dispatch_ID, Kernel_Name, GPU_ID, Queue_ID, PID, TID, Grid_Size, Workgroup_Size, LDS_Per_Workgroup, Scratch_Per_Workitem, Arch_VGPR, Accum_VGPR, SGPR, Wave_Size` + each PMC counter as its own column. Some releases also expose `Kernel_ID` and `Correlation_ID`; treat both as optional. **There are no `VGPRs`/`SGPRs`/`AGPRs` plural columns and no `Start_Timestamp`/`End_Timestamp` columns** — use `Arch_VGPR`/`Accum_VGPR`/`SGPR` (singular) and read durations from `kernel_trace.csv`.
 
 ---
 
@@ -278,7 +280,7 @@ compare(
 
 ## Extracting rocprof-compute's section / SoL output as data
 
-rocprof-compute's section reports are designed as human-readable tables, but the underlying CSVs are right there. The "speed-of-light" gaps in section 2.1.1 are derived from `pmc_perf.csv` + the roofline benchmarks; you can recompute them in Python:
+rocprof-compute's section reports are designed as human-readable tables, but the underlying CSVs are right there. The "speed-of-light" gaps in the SoL block (`-b 2`, formerly §2.1.1) are derived from `pmc_perf.csv` + the roofline benchmarks; you can recompute them in Python:
 
 ```python
 # sysinfo.csv is a WIDE single-row format (not param/value pairs). Inspect with
@@ -344,5 +346,5 @@ This makes future re-analysis cheap: the raw data lives as JSON, you don't need 
 - **`TCC_EA_*` vs `TCC_EA0_*`**: on gfx942 / gfx950 only `TCC_EA0_*` is exposed per XCD — there is **no** `TCC_EA1_*` (the two-channel form was gfx906 / gfx908). Don't sum a nonexistent second channel; verify with `rocprofv3 -L | grep TCC_EA`.
 - **PC-sampling `Source` column is blank**: rebuild with `-gline-tables-only` / `-g`. Same for ATT's source attribution.
 - **Per-PC ATT data is split across many JSON files** (one per CU / shader engine): glob `att_<tag>/**/*.json` and aggregate.
-- **`SQ_INSTS_MFMA = 0` on a kernel you expect to use MFMA**: either MFMA is not being emitted (check ISA with `llvm-objdump -d`), or the counter group wasn't collected this pass; rerun with `rocprof-compute analyze -p <dir> -b 11` (Compute Pipeline) or `rocprofv3 --pmc SQ_INSTS_MFMA`.
+- **`SQ_INSTS_MFMA = 0` on a kernel you expect to use MFMA**: either MFMA is not being emitted (check ISA with `llvm-objdump -d`), or the counter group wasn't collected this pass; rerun with `rocprof-compute analyze -p <dir> -b 10` (Compute Pipe) / `-b 11` (Instruction Mix), or `rocprofv3 --pmc SQ_INSTS_MFMA`.
 - **`rocprofv3` replays the application** between PMC groups — any host-side work (init, dataset load) runs N times. Move it out of the profile window.

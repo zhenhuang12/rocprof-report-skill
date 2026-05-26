@@ -54,7 +54,7 @@ Replay count: 1 pass. Wall time: kernel duration + ~tens of ms init.
 
 ## Recipe 2: Section-based perf metrics (second pass) — analog of `ncu --set full`
 
-This is the bread-and-butter run. `rocprof-compute profile` collects the PMC groups that back rocprof-compute's ~24 perf sections (2.1.0 launch, 2.1.1 SoL, 2.1.2 Wavefronts, 2.1.10 Compute, 2.1.15 Memory, …) and the roofline model.
+This is the bread-and-butter run. `rocprof-compute profile` collects the PMC groups that back rocprof-compute's ~24 perf sections (block `2` SoL, `5` CS / wavefront, `7` wavefront launch, `10` compute pipe, `11` instruction mix, `15` L1D, `16` L2 cache, `17` L2-fabric / HBM, `18` scratch / spill — see `--list-metrics gfx942` for the full list; older docs use dotted IDs like `2.1.10` for the same blocks) and the roofline model.
 
 ```bash
 rocprof-compute profile \
@@ -83,7 +83,7 @@ After collection, render the section reports:
 rocprof-compute analyze -p $PROFILE_RUN_DIR/reports/rpc_<tag> > \
     $PROFILE_RUN_DIR/analysis/details_<tag>.txt
 
-# A single section (e.g., 2.1.15 Memory Workload)
+# A single section (e.g., `-b 15` = L1D cache; older dotted form `2.1.15`)
 rocprof-compute analyze -p $PROFILE_RUN_DIR/reports/rpc_<tag> -b 15
 
 # List all kernels & dispatches (NOT section IDs)
@@ -241,21 +241,21 @@ rocprof-compute analyze --list-metrics gfx950        # MI355X
 
 Top-level block / section IDs (verified from `--list-metrics gfx942` on rocprof-compute 7.x). `-b` accepts EITHER a block ID like `12` OR a metric ID like `12.1.1` OR a block alias like `lds`/`l1i`/`sl1d`.
 
-| ID | Section | What it tells you |
+| ID | Block | What it tells you |
 |---|---|---|
-| 2  | SoL / SoL-derived            | % of peak for compute, HBM, vL1, L2, scratch — the headline |
-| 5  | CS / Wavefront               | Wavefront launch / occupancy summary |
-| 7  | Wavefront launch             | Per-dispatch grid, workgroup, register, LDS |
-| 10 | Instruction Mix              | VALU vs MFMA vs VMEM vs LDS instruction counts |
-| 11 | Compute Pipeline             | VALU / SALU / Matrix-core busy %, IPC, FMA |
-| 12 | LDS                          | LDS bank conflicts, bytes, bandwidth |
-| 13 | Instruction Cache            | I-cache hit/miss |
-| 14 | Scalar L1D                   | sL1D cache stats |
-| 15 | TA / TD                      | Texture address / data (vector mem path) |
-| 16 | vL1D cache (TCP)             | Hit rate, sectors per request, coalescing |
-| 17 | L2 cache (TCC)               | Aggregate L2 hit rate, atomics, bytes |
-| 18 | L2 per Channel               | Per-channel hit rate, per-channel HBM traffic |
-| 21 | PC Sampling                  | PC-sample-derived wait-reason breakdown |
+| 2  | Speed-of-Light (SoL)          | % of peak for compute, HBM, vL1, L2, scratch — the headline |
+| 5  | CS / Wavefront                | Waves/wkg, achieved occupancy, wavefront launch |
+| 7  | Wavefront Launch Stats        | Per-dispatch grid, workgroup, registers, LDS, occupancy limiter |
+| 10 | Compute Pipe                  | VALU / SALU / Matrix-core busy %, IPC, FMA |
+| 11 | Instruction Mix               | VALU / SALU / MFMA / VMEM / LDS / FLAT instruction counts |
+| 12 | Pipe SoL                      | Per-pipe Speed-of-Light |
+| 13 | Pipe Stats                    | Per-pipe stall / activity stats |
+| 14 | Cache (overview)              | Cache summary across vL1 / L2 |
+| 15 | L1D Cache (TCP)               | vL1 hit rate, sectors per request, bytes per wave |
+| 16 | L2 Cache (TCC)                | L2 hit rate, atomics, bytes |
+| 17 | L2 – Fabric / HBM (TCC_EA)    | HBM read/write bytes, achieved BW |
+| 18 | Scratch / Spill               | Scratch reads/writes (= register spill on AMD) |
+| 21 | Misc / PC sampling derived    | Other derived metrics (incl. PC-sample-driven aggregates) |
 
 (Run `--list-metrics gfx942` on your actual install to confirm; the IDs above are top-level *block* IDs. Sub-metric IDs use decimal nesting like `12.1.1`.)
 

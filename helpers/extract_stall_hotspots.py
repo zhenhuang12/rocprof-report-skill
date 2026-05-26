@@ -200,11 +200,22 @@ def aggregate_att_json_dir(att_dir):
 
 
 def _resolve_pcsamp_dir(d):
-    """Glob a pcsamp_<tag> directory for the PC-sampling CSV."""
-    matches = sorted(Path(d).glob("pc_sampling_*.csv"))
+    """Recursively glob a pcsamp_<tag> directory for the PC-sampling CSV.
+
+    rocprofv3 writes the CSV at a nested path like
+    `<pcsamp_dir>/pmc_1/<host>/<pid>_pc_sampling_host_trap_v0.csv`, so a
+    non-recursive `glob` silently returns no matches. We use `rglob` and accept
+    both the bare `pc_sampling_*.csv` and the rocprofv3-pid-prefixed form.
+    """
+    base = Path(d)
+    matches = sorted(base.rglob("pc_sampling_*.csv"))
+    matches += sorted(base.rglob("*_pc_sampling_*.csv"))
+    # De-dup while preserving order.
+    seen = set()
+    matches = [m for m in matches if not (m in seen or seen.add(m))]
     if not matches:
         raise FileNotFoundError(
-            f"No pc_sampling_*.csv found under {d}; check rocprofv3 -f csv was set"
+            f"No pc_sampling_*.csv found under {base}; check rocprofv3 -f csv was set"
         )
     if len(matches) > 1:
         # Multiple CSVs (e.g. host_trap + stochastic): prefer host_trap first
@@ -237,7 +248,10 @@ def main():
             pcsamp_resolved.append(None)
 
     sources = list(args.pcsamp) + pcsamp_resolved + list(args.att_dir)
-    sources = [s for s in sources if s is not None]
+    if not sources or any(s is None for s in sources):
+        print("[error] no PC-sampling / ATT inputs resolved — nothing to do",
+              file=sys.stderr)
+        sys.exit(2)
     if len(sources) != len(args.tag):
         ap.error("Total --pcsamp + --pcsamp-dir + --att-dir count must equal --tag count")
 

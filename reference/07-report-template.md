@@ -103,7 +103,7 @@ Minimal runnable command listing:
 | HBM read BW (achieved / peak) | X / 5300 GB/s | … | `TCC_EA0_RDREQ_32B_sum × 32 / duration` (TCC_EA1_* does NOT exist on gfx942/gfx950) |
 | vL1 hit rate | X% | Y% | rocprof-compute L1D block (`-b 15`) |
 | L2 hit rate | X% | Y% | `TCC_HIT_sum / (TCC_HIT_sum + TCC_MISS_sum)` |
-| MFMA busy (% peak) | X% | Y% | rocprof-compute compute-pipe block (`-b 10` / `-b 11`) |
+| MFMA busy (% peak) | X% | Y% | rocprof-compute compute-pipe block (`-b 10`) |
 | Arch_VGPR / work-item | X | Y | `pmc_perf.csv: Arch_VGPR` |
 | Accum_VGPR / work-item (= AGPR on CDNA3+) | X | Y | `pmc_perf.csv: Accum_VGPR` |
 | SGPR / wavefront | X | Y | `pmc_perf.csv: SGPR` (singular) |
@@ -127,10 +127,10 @@ Minimal runnable command listing:
 <per-XCD active cycles, rocprof-compute workgroup-balance breakdown, timeseries shape, input distribution imbalance ratios>
 
 ### 2.3 Instruction-level stall analysis
-<stall breakdown % from PC-sampling `Wait_Reason` aggregation (the ONLY granular source on gfx942/gfx950 — only `SQ_WAIT_ANY`, `SQ_WAIT_INST_ANY`, `SQ_WAIT_INST_LDS` exist as PMCs). Top source-line hotspots from PC sampling: `(file:line, Wait_Reason, sample %)`. Wait reasons to call out: WAIT_INST_VMEM, WAIT_INST_LDS, WAIT_INST_SMEM, WAIT_INST_FLAT, WAIT_BARRIER, WAIT_VMCNT, WAIT_LGKMCNT. Verify the exact label spelling against your PC-sampling CSV's `Wait_Reason` column.>
+<stall breakdown % from PC-sampling `Wait_Reason` aggregation (the ONLY granular source on gfx942/gfx950 — only `SQ_WAIT_ANY`, `SQ_WAIT_INST_ANY`, `SQ_WAIT_INST_LDS` exist as PMCs). Top source-line hotspots from PC sampling: `(file:line, Wait_Reason, sample %)`. Wait reasons to call out: WAIT_INST_VMEM, WAIT_INST_LDS, WAIT_INST_SMEM, WAIT_INST_FLAT, WAIT_BARRIER, WAIT_VMCNT, WAIT_LGKMCNT, WAIT_EXPCNT, WAIT_MISC (the last two may not be present on every install — verify against your PC-sampling CSV's `Wait_Reason` column and `rocprofv3 -L`).>
 
 ### 2.4 MFMA / matrix-core utilization
-<MFMA busy % from rocprof-compute compute-pipe block (`-b 10` / `-b 11`), instruction shape (16×16×16 BF16 / 32×32×8 / FP8 on CDNA3; F6F4 / XF32 on CDNA4), Accum_VGPR (AGPR) usage; or "0%, n/a — kernel is non-MFMA". Cite the actual per-dtype `SQ_INSTS_VALU_MFMA_MOPS_<DTYPE>` counters your install exposes (`rocprofv3 -L | grep MFMA`).>
+<MFMA busy % from rocprof-compute compute-pipe block (`-b 10`); MFMA instruction counts from instruction-mix block (`-b 11`); instruction shape (16×16×16 BF16 / 32×32×8 / FP8 on CDNA3; F6F4 / XF32 on CDNA4), Accum_VGPR (AGPR) usage; or "0%, n/a — kernel is non-MFMA". Cite the actual per-dtype `SQ_INSTS_VALU_MFMA_MOPS_<DTYPE>` counters your install exposes (`rocprofv3 -L | grep MFMA`).>
 
 ### 2.5 CU timeline
 <shape: flat-high / flat-low / tail / sawtooth — reference the ASCII plot in `analysis/timeline_plots.txt` (single file per run, regardless of tag count). Note rocprof-compute timeseries minimum interval is ~1 ms vs NVIDIA PM ~2 µs, so very-short kernels need ATT instead>

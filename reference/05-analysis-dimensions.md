@@ -15,7 +15,9 @@ For each dimension this doc describes:
 
 **What:** is the grid large enough to fill the GPU? Is occupancy being limited by VGPR/AGPR, LDS, or workgroup-size constraints?
 
-**Counters (rocprof-compute blocks 7 (wavefront launch) and 5 (CS/wavefront), from `pmc_perf.csv`):**
+**Counters (rocprof-compute blocks 7 (wavefront launch) and 5 (CS/wavefront)):**
+
+From `pmc_perf.csv` per-dispatch columns (verified):
 ```
 Grid_Size, Workgroup_Size (each dim)
 Wave_Size                                       # 64 on CDNA gfx9
@@ -24,19 +26,25 @@ SGPR (per wavefront)                            # singular, NOT "SGPRs"
 Accum_VGPR (per work-item)                      # = AGPR pool on CDNA3+ (NOT "AGPRs")
 LDS_Per_Workgroup (bytes, statically + dynamically allocated)
 Scratch_Per_Workitem                            # = register spill bytes (DRAM-backed)
-Wavefronts_Per_Workgroup
-Workgroups_Launched
-Achieved_Occupancy_pct                          # rocprof-compute derives this
-Theoretical_Occupancy_pct                       # from VGPR/LDS/wkg limits
-Compute_Unit_Count                              # 304 on MI300X, 256 on MI355X
-XCD_Count                                       # MI300X: 8 XCDs over 4 IODs (1-8 visible depending on CPX/SPX partition mode). MI355X: 8 XCDs over 2 IODs.
+```
+
+Derived / sysinfo (NOT separate `pmc_perf.csv` columns — compute or look up):
+```
+Wavefronts_Per_Workgroup  = ceil(prod(Workgroup_Size) / 64)
+Total_Workgroups          = prod(Grid_Size) / prod(Workgroup_Size)
+Compute_Unit_Count        # sysinfo.csv: num_cu (304 on MI300X SPX/NPS1; 256 on MI355X)
+XCD_Count                 # sysinfo.csv: num_xcd (1 in SPX/NPS1 visible context, 8 physical;
+                          # MI355X: 2 IODs × 4 XCDs; MI300X: 4 IODs × 2 XCDs)
+Achieved_Occupancy        # rocprof-compute SoL block (`-b 2`) / wavefront block (`-b 5`),
+                          # NOT in pmc_perf.csv as a single column
+Theoretical_Occupancy     # rocprof-compute wavefront block (`-b 5`)
 ```
 
 > **CDNA3 register model:** each SIMD has 256 VGPRs **plus** 256 AGPRs (Accumulator GPRs). MFMA reads source operands from VGPR/AGPR and writes accumulator results to AGPR. CDNA3 introduced free movement between VGPR and AGPR, but the budget is *two separate pools* — a register-pressure report listing 256 "VGPRs" is hiding the AGPR half. rocprof-compute reports both.
 
 **Reading:**
 
-- **Waves per CU < 1**: grid is too small to fill the chip. On MI300X with 304 CUs (SPX/NPS1), if `Workgroups_Launched < 304 × workgroups_per_CU`, some CUs sit idle the entire time. Even more brutal in NPS2/NPS4 or CPX modes where the kernel sees fewer CUs per visible GPU.
+- **Waves per CU < 1**: grid is too small to fill the chip. On MI300X with 304 CUs (SPX/NPS1), if `Total_Workgroups < 304 × workgroups_per_CU` (compute `Total_Workgroups` as `prod(Grid_Size) / prod(Workgroup_Size)`), some CUs sit idle the entire time. Even more brutal in NPS2/NPS4 or CPX modes where the kernel sees fewer CUs per visible GPU.
 - **Waves per CU in [1, 2)**: you have a tail wave (partial last wave). Tail effect magnitude is roughly `(last_wave_blocks / wave_size) × (block_exec_time / total_kernel_time)`.
 - **Waves per CU > 4**: grid is plenty big, scheduling averages out.
 - **Theoretical occupancy 100% but achieved << 100%**: stalls are the bottleneck, not launch config. Move to Dimension 3.
@@ -49,12 +57,19 @@ XCD_Count                                       # MI300X: 8 XCDs over 4 IODs (1-
 waves_per_wkg = ceil(workgroup_size / 64)              # CDNA gfx9 wave = 64
 wkgs_per_cu_vgpr = min_limit_from_vgpr_budget
 wkgs_per_cu_lds  = min_limit_from_lds_budget
-wkgs_per_cu_max  = min_workgroups_per_cu_HW            # 32 on gfx942
+# HW wave limit: max 32 waves/CU = 8 waves/SIMD × 4 SIMDs on gfx942 / gfx950.
+# Convert to a workgroup ceiling by dividing by waves_per_wkg; gfx9 also has a
+# hard 16 workgroups/CU cap independent of register / LDS pressure.
+wkgs_per_cu_waves = 32 // waves_per_wkg
+wkgs_per_cu_max   = min(wkgs_per_cu_waves, 16)
 wkgs_per_cu = min(wkgs_per_cu_vgpr, wkgs_per_cu_lds, wkgs_per_cu_max)
-wave_size = wkgs_per_cu * num_cus                       # global concurrent wkgs
-num_waves = ceil(total_workgroups / wave_size)
-last_wave_blocks = total_workgroups - (num_waves - 1) * wave_size
-last_wave_utilization_pct = last_wave_blocks / wave_size * 100
+# Distinct from the per-wave WAVE_SIZE=64 hardware constant — this is the
+# number of workgroups that can be co-resident on the whole chip in one
+# scheduling pass.
+wkgs_in_flight = wkgs_per_cu * num_cus
+num_waves = ceil(total_workgroups / wkgs_in_flight)
+last_wave_blocks = total_workgroups - (num_waves - 1) * wkgs_in_flight
+last_wave_utilization_pct = last_wave_blocks / wkgs_in_flight * 100
 ```
 
 **MI300X partition note:** in SPX/NPS1 mode the kernel sees 1 GPU × 304 CU. In CPX mode it sees 8 GPUs × 38 CU each, with separate HBM partitions. Recompute the wave math against the partition the run actually used. `rocm-smi --showcomputepartition --showmemorypartition` + `rocminfo` confirm the active mode.
@@ -70,8 +85,10 @@ last_wave_utilization_pct = last_wave_blocks / wave_size * 100
 **Counters / signals:**
 
 ```
-# Per-CU active-cycle distribution (from rocprof-compute section 2.1.23 if present;
-# otherwise compute from per-CU SQ_BUSY_CYCLES if you collect that PMC)
+# Per-CU active-cycle distribution — not exposed as a dedicated rocprof-compute
+# section in current releases; the workgroup-balance breakdown shows up in the
+# CS / wavefront block (-b 5). For per-CU resolution, collect SQ_BUSY_CYCLES /
+# GRBM_GUI_ACTIVE manually and aggregate by CU.
 SQ_BUSY_CYCLES (per CU)
 GRBM_GUI_ACTIVE                       # global active cycles
 GRBM_CP_BUSY                          # cmd-processor busy
@@ -161,15 +178,17 @@ WAIT_INST_SMEM        # waiting on scalar memory
 WAIT_INST_FLAT        # waiting on FLAT memory
 WAIT_BARRIER          # waiting at barrier
 WAIT_VMCNT, WAIT_LGKMCNT
+WAIT_EXPCNT           # export-count drain (uncommon on compute)
+WAIT_MISC             # catch-all (verify with `rocprofv3 -L`; not always present)
 ISSUED                # productively issuing — the "good" reason
 NOT_SELECTED          # eligible but scheduler picked another wave — good sign (plenty of parallelism)
 NO_INST               # wave prologue / drain — usually minor
 OTHER
 ```
 
-Wait-reason enum names vary between ROCm versions; the canonical list for your install is in
-`rocprofv3 -L` output and in the rocprof-compute section-2.1.13 column headers. Treat any
-name above as a label to match against your actual data, not as a hard guarantee.
+Wait-reason enum names vary between ROCm versions; the canonical list for your install is
+the `Wait_Reason` column of your PC-sampling CSV (and the enum in `rocprofv3 -L` output).
+Treat any name above as a label to match against your actual data, not as a hard guarantee.
 
 **Stall reasons you need to know (approximate NVIDIA analogs in parens):**
 
@@ -205,7 +224,7 @@ Reminder: of these, only `WAIT_INST_LDS` is also a PMC (`SQ_WAIT_INST_LDS`). The
 
 **What:** is the kernel using Matrix Cores at all? If yes, how well?
 
-**Counters (rocprof-compute section 2.1.10):**
+**Counters (rocprof-compute compute-pipe block, `-b 10`, formerly §2.1.10):**
 
 > MFMA per-dtype counters are named `SQ_INSTS_VALU_MFMA_MOPS_<DTYPE>` on gfx942 / gfx950
 > ("MOPS" = matrix-ops). The exact set of `<DTYPE>` suffixes (F16, BF16, F32, F64, I8, F8,
@@ -230,8 +249,8 @@ GRBM_GUI_ACTIVE                        # for normalizing to total time
 
 - **`SQ_INSTS_MFMA == 0`**: no Matrix Core usage at all. For matmul-ish kernels (attention, GEMM, conv), this is almost always a missed optimization.
 - **`SQ_INSTS_MFMA / SQ_INSTS_VALU > 0.1`**: MFMA is in the mix; check how dense it is over time.
-- **rocprof-compute SoL "matrix engine busy %" > 50%**: kernel is doing well on the Matrix-Core front. Focus elsewhere.
-- **MFMA busy %** much lower than expected on a matmul-ish kernel: data isn't arriving fast enough (Dimension 6) or tile sizes don't fit the MFMA shape.
+- **Matrix-Core busy % > 50%** (rocprof-compute SoL "matrix engine busy %" line, computed as `SQ_VALU_MFMA_BUSY_CYCLES / GRBM_GUI_ACTIVE * 100`): kernel is doing well on the Matrix-Core front. Focus elsewhere.
+- **Matrix-Core busy %** much lower than expected on a matmul-ish kernel: data isn't arriving fast enough (Dimension 6) or tile sizes don't fit the MFMA shape.
 
 **MI300X (CDNA3 / gfx942) MFMA notes:**
 
@@ -284,7 +303,7 @@ TCC_EA0_RDREQ_sum                           # HBM read pressure over time (TCC_E
 
 **What:** are global loads coalesced? Are caches hit? Is HBM actually busy?
 
-**Counters (rocprof-compute sections 2.1.15, 2.1.16, 2.1.17):**
+**Counters (rocprof-compute L1D / L2 / HBM blocks, `-b 15` / `-b 16` / `-b 17`, formerly §2.1.15 / §2.1.16 / §2.1.17):**
 ```
 # HBM (TCC_EA = "Effective Address" memory subsystem)
 # On gfx942 / gfx950, only `TCC_EA0_*` exists — there is NO `TCC_EA1_*` (a
@@ -332,12 +351,12 @@ SQ_INSTS_FLAT                                    # FLAT addressing path
 - **HBM achieved BW << 10% of peak but kernel is slow**: *not* bandwidth-bound. It's latency-bound (Dimension 3) or compute-bound (check `SQ_INSTS_MFMA` + busy %).
 - **vL1 hit rate > 90%**: good data locality, vL1 is absorbing the reuse.
 - **L2 hit rate < 50%**: L2 is being blown through (or the kernel is reading something it never reuses), reads fall to HBM.
-- **Bytes per wavefront (rocprof-compute reports this in section 11 "Instruction Mix" / 15 "L1D Cache")**: ideal is 256 B for a coalesced wave64 dword load (4 B/lane × 64 lanes); a wider `global_load_dwordx4` raises this to 1024 B/wave (16 B/lane × 64 lanes). Substantially less means under-vectorization, gather/scatter, or stride > 1 access.
+- **Bytes per wavefront (rocprof-compute reports this in `-b 11` "Instruction Mix" / `-b 15` "L1D Cache")**: peak is opcode-dependent — 256 B for `global_load_dword` (4 B/lane × 64 lanes), 512 B for `global_load_dwordx2`, 1024 B for `global_load_dwordx4` (16 B/lane × 64 lanes). Substantially less than the opcode peak means under-vectorization, gather/scatter, or stride > 1 access; values above the peak indicate uncoalesced gathers.
 - **`SQ_LDS_BANK_CONFLICT > 0`**: bank conflicts. The 32-bank LDS serializes same-bank accesses. Pad tile dims or swizzle indices. LDS budget is 64 KB/CU on both MI300X and MI355X, so the padding-cost / occupancy trade is the same on both gens.
 - **`Scratch_Per_Workitem > 0` (from launch info) or rocprof-compute SoL "Scratch" non-zero**: **register spill** — very bad, scratch is HBM-backed. Reduce VGPR/AGPR pressure with `__launch_bounds__` or kernel splitting.
 - **`SQ_INSTS_LDS == 0`**: kernel uses no LDS. Fine for element-wise kernels; often a missed optimization for data-reuse-heavy kernels.
 
-rocprof-compute's section 2.1.17 reports the HBM utilization in the same "Speed-of-Light" form NCU uses:
+rocprof-compute's L2-fabric / HBM block (`-b 17`, formerly §2.1.17) reports the HBM utilization in the same "Speed-of-Light" form NCU uses:
 ```
 HBM        Avg     Min     Max     Pct Peak
 Bandwidth  X TB/s  ...     ...     Y%
@@ -354,13 +373,13 @@ Bandwidth  X TB/s  ...     ...     Y%
 - **Infinity Cache (256 MB)** is retained on MI355X but coupled to HBM3E (8.0 TB/s) instead of HBM3 — the working-set sweet spot is similar in size to MI300X but the HBM penalty for missing it is smaller.
 - **FP4 / FP6 / MXFP** reduce HBM BW pressure on the same workload by 2-4× relative to FP8/FP16. The per-dtype `SQ_INSTS_VALU_MFMA_MOPS_*` counter for block-scaled MX formats is install-specific — `rocprofv3 -L | grep -i mfma` shows what your build exposes.
 
-NCU's rule engine often reports the coalescing issue directly; rocprof-compute analogs are in section 2.1.11 ("Memory Pipe — bytes per wavefront", "Access pattern utilization"):
+NCU's rule engine often reports the coalescing issue directly; rocprof-compute analogs are in the Instruction Mix block (`-b 11`, formerly §2.1.11 — "Bytes per wavefront", "Access pattern utilization") and the L1D block (`-b 15`):
 ```
-Memory Pipe — Bytes per wavefront                   Avg  Min  Max  Peak (256)
-  global_load_dwordx4 (vector load 16B/lane × 64)   62   16   256  256
+Instruction Mix — Bytes per wavefront               Avg  Min  Max  Peak
+  global_load_dwordx4 (vector load 16B/lane × 64)   62   16   1024 1024
 ```
 
-A value of 62 (out of 256) means roughly 4 of 16 bytes per lane are actually used — significant coalescing problem.
+A value of 62 (out of 1024 peak for `global_load_dwordx4`) means roughly 1 of 16 bytes per lane are actually used — significant coalescing problem. (For a plain `global_load_dword` the peak is 256 B/wave; for `dwordx2` it's 512 B/wave.)
 
 **Fix directions (by pattern):**
 

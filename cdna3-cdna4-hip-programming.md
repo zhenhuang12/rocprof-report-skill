@@ -192,12 +192,15 @@ Peak throughput (per CU, per cycle, dense): the bigger tile (32x32x8 vs 16x16x16
 
 | New shape | A/B dtype | C dtype | Notes |
 |---|---|---|---|
-| `v_mfma_f32_16x16x32_f8f6f4` | FP8/FP6/FP4 mix | FP32 | OCP standard FP8 (NOT FNUZ) |
-| `v_mfma_f32_32x32x16_f8f6f4` | mixed | FP32 | bigger tile |
-| `v_mfma_scale_f32_*` | scaled FP8/6/4 with E8M0 exponent (MXFP) | FP32 | new scale-block format |
+| `v_mfma_f32_16x16x128_f8f6f4` | FP8/FP6/FP4 mix | FP32 | OCP standard FP8 (NOT FNUZ); unscaled |
+| `v_mfma_f32_32x32x64_f8f6f4` | mixed | FP32 | bigger tile; unscaled |
+| `v_mfma_scale_f32_16x16x128_f8f6f4` | scaled FP8/6/4 with E8M0 block exponent (MX) | FP32 | scale-block form, same tile |
+| `v_mfma_scale_f32_32x32x64_f8f6f4` | scaled mixed (MX) | FP32 | bigger-tile scale-block form |
 | `v_mfma_*_sparse` | A 2:4 sparse | FP32 | new on gfx950 |
 | `v_mfma_f64_*` | FP64 | FP64 | **halved throughput** vs CDNA3 |
 | TF32-like `*_16x16x4f32` | FP32 | FP32 | **removed**; use BF16 instead |
+
+Always confirm the exact mnemonic against `llvm-mc -mcpu=gfx950 -show-encoding` or `clang/include/clang/Basic/BuiltinsAMDGPU.def`; LLVM occasionally renames intermediate forms during the gfx950 stabilization window.
 
 **Implications for kernel design:**
 
@@ -270,7 +273,7 @@ LDS atomics use the `ds_*` instruction family (`ds_add_u32`, `ds_add_rtn_u32`, `
 
 ### Coalescing
 
-A wave64 issuing a `global_load_dwordx4` (16 B/lane × 64 lanes = 1024 B) ideally generates **4 TCC requests** (one per 256-byte cacheline-equivalent). Check via rocprof-compute §2.1.11 "Bytes per wavefront" — the peak is 256 B for a fully coalesced wave64 doing dword loads.
+A wave64 issuing a `global_load_dwordx4` (16 B/lane × 64 lanes = 1024 B) ideally generates **4 TCC requests** (one per 256-byte cacheline-equivalent). Check via rocprof-compute `-b 11` (Instruction Mix, formerly §2.1.11) "Bytes per wavefront" — the peak is **opcode-dependent**: 256 B for a coalesced wave64 dword load (4 B/lane × 64 lanes), 512 B for `global_load_dwordx2`, and 1024 B for `global_load_dwordx4` (16 B/lane × 64 lanes). A value substantially below the opcode peak means under-vectorization or stride > 1 access.
 
 | Pattern | Bytes/wavefront | Sectors/req |
 |---|---|---|
@@ -307,14 +310,14 @@ On gfx942 / gfx950, only **three** `SQ_WAIT_*` PMC counters exist as hardware co
 | `WAIT_VMCNT` | vmcnt > 0 | Drain outstanding vmem before continuing — usually from explicit `s_waitcnt vmcnt(0)` or mem ordering |
 | `WAIT_LGKMCNT` | lgkmcnt > 0 | Drain LDS/GDS/scalar/const before continuing |
 
-Scratch (= register spill) traffic does **not** have a dedicated wait-reason — diagnose it via `Scratch_Per_Workitem > 0` in launch info plus rocprof-compute's compute-pipeline block (`-b 11`). Always verify the exact wait-reason enum set on your install with `rocprofv3 -L`.
+Scratch (= register spill) traffic does **not** have a dedicated wait-reason — diagnose it via `Scratch_Per_Workitem > 0` in launch info plus rocprof-compute's scratch / spill block (`-b 18`). Always verify the exact wait-reason enum set on your install with `rocprofv3 -L`.
 
 A PC-sampling `WAIT_INST_VMEM` share above ~30% of samples is usually the #1 bottleneck in a non-trivial kernel. Treatments, in order:
 
 1. **Reduce traffic** — recompute, fuse, exploit symmetry, or use lower precision (FP16/BF16/FP8/FP4 on supported gens).
 2. **Hide latency with ILP** — load 4 or 8 cachelines ahead of compute (double/quad-buffer).
 3. **Move to LDS** — `global_load_lds` + LDS-resident reuse beats re-issuing the same global load.
-4. **Reorder to improve coalescing** — if `Bytes per wavefront > 256`, you have a coalescing problem; fix it first.
+4. **Reorder to improve coalescing** — compare `Bytes per wavefront` to the opcode peak (256 B for dword, 512 B for `dwordx2`, 1024 B for `dwordx4`); a value above the peak means uncoalesced gathers and is a coalescing problem to fix first.
 
 ---
 
@@ -393,7 +396,7 @@ These are the patterns that consistently produce well-performing CDNA kernels �
 
 ### 2. Coalesce global loads
 - Each wave64 should fetch contiguous bytes. `data[tid]` is correct; `data[tid*stride]` is wrong unless `stride==1`.
-- Target 256 B per wavefront in rocprof-compute §2.1.11.
+- Target the opcode peak in rocprof-compute `-b 11` (Instruction Mix) "Bytes per wavefront": 256 B for dword, 512 B for `dwordx2`, 1024 B for `dwordx4`.
 
 ### 3. Use LDS for reuse
 - The vL1 hit rate is unreliable; the L2 is shared across an XCD's CUs but limited.
@@ -443,7 +446,7 @@ These are the patterns that consistently produce well-performing CDNA kernels �
 - TF32 removed; FP64 halved. If your algorithm needs FP64, MI300X is the better target.
 
 ### 16. Use rocprof-compute SoL as the first signal
-- §2.1.1 names the bottleneck subsystem and gives a gap-to-peak number. Use that to decide whether to chase compute, memory BW, or latency.
+- The SoL block (`rocprof-compute analyze -p <dir> -b 2`, formerly §2.1.1) names the bottleneck subsystem and gives a gap-to-peak number. Use that to decide whether to chase compute, memory BW, or latency.
 
 ---
 
@@ -466,8 +469,9 @@ acc = __builtin_amdgcn_mfma_f32_16x16x16bf16_1k(a, b, acc, 0, 0, 0);
 acc = __builtin_amdgcn_mfma_f32_32x32x8bf16_1k(a, b, acc, 0, 0, 0);
 // 16x16x32 FP8 (CDNA3 FNUZ):
 acc = __builtin_amdgcn_mfma_f32_16x16x32_fp8_fp8(a, b, acc, 0, 0, 0);
-// 16x16x32 f8/f6/f4 (CDNA4 standard):
+// 16x16x128 f8/f6/f4, scaled MX form (CDNA4 standard):
 acc = __builtin_amdgcn_mfma_scale_f32_16x16x128_f8f6f4(a, b, acc, ...);
+// Unscaled 16x16x128 / 32x32x64 forms also exist; see the table above.
 
 // Atomic add (hardware, with -munsafe-fp-atomics):
 atomicAdd(&counter, 1.f);

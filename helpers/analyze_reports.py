@@ -12,7 +12,15 @@ Usage examples:
             --rpc profile/myrun/reports/rpc_<tag> --tag <tag> \\
             --kernel "my_kernel"
 
-    # Multiple reports → side-by-side compare
+    # With explicit kernel_trace.csv for duration reporting
+    python3 analyze_reports.py --run-dir profile/myrun \\
+            --rpc profile/myrun/reports/rpc_<tag> --tag <tag> \\
+            --kernel-trace profile/myrun/reports/trace_<tag>/kernel_trace.csv \\
+            --kernel "my_kernel"
+
+    # Multiple reports → side-by-side compare. Duration is auto-resolved from
+    # a sibling reports/trace_<tag>/kernel_trace.csv when present (no explicit
+    # --kernel-trace required).
     python3 analyze_reports.py --run-dir profile/myrun \\
             --rpc profile/myrun/reports/rpc_v1 --tag v1 \\
             --rpc profile/myrun/reports/rpc_v2 --tag v2 \\
@@ -42,13 +50,45 @@ def _safe_tag(tag: str) -> str:
     return "".join(ch if ch in _TAG_SAFE else "_" for ch in tag) or "untagged"
 
 
-def collect(rpc_dir: Path, tag: str, analysis_dir: Path, kernel_regex, arch) -> dict:
-    rpc = load_rpc_dir(rpc_dir, kernel_regex=kernel_regex)
+def _resolve_kernel_trace(rpc_dir: Path, tag: str, explicit: Path | None) -> Path | None:
+    """Find a kernel_trace.csv for this tag. Explicit --kernel-trace wins; else
+    look for sibling `reports/trace_<tag>/**/kernel_trace.csv` next to rpc_dir.
+
+    rocprofv3 writes kernel_trace under a nested
+    `<out>/pmc_1/<host>/<pid>_kernel_trace.csv` path when invoked via
+    rocprof-compute, and `kernel_trace.csv` at the top level when invoked as
+    `rocprofv3 --kernel-trace -d <out>`. Glob both.
+    """
+    if explicit is not None:
+        return explicit if explicit.exists() else None
+    # Sibling convention: reports/rpc_<tag>/  ←→  reports/trace_<tag>/
+    parent = rpc_dir.parent
+    candidates = []
+    candidates.extend(sorted(parent.glob(f"trace_{tag}/kernel_trace.csv")))
+    candidates.extend(sorted(parent.glob(f"trace_{tag}/**/kernel_trace.csv")))
+    candidates.extend(sorted(parent.glob(f"trace_{tag}/**/*_kernel_trace.csv")))
+    return candidates[0] if candidates else None
+
+
+def collect(rpc_dir: Path, tag: str, analysis_dir: Path, kernel_regex, arch,
+            kernel_trace: Path | None = None) -> dict:
+    ktrace = _resolve_kernel_trace(rpc_dir, tag, kernel_trace)
+    rpc = load_rpc_dir(rpc_dir, kernel_regex=kernel_regex,
+                       kernel_trace_csv=str(ktrace) if ktrace else None)
     arch_used = arch or detect_arch(rpc) or "gfx942"
 
-    n_disp = len(rpc["timestamps"])
+    pmc = rpc.get("pmc")
+    n_disp = 0 if pmc is None or pmc.empty else len(pmc)
     dur_ns = kernel_duration_ns(rpc)
-    print(f"[{tag}] {rpc_dir}: {n_disp} dispatch(es), total duration {dur_ns/1e3:.2f} µs, arch={arch_used}")
+    if dur_ns > 0:
+        print(f"[{tag}] {rpc_dir}: {n_disp} dispatch(es), total duration {dur_ns/1e3:.2f} µs, arch={arch_used}")
+    elif ktrace is None:
+        print(f"[{tag}] {rpc_dir}: {n_disp} dispatch(es), duration n/a "
+              f"(no kernel_trace.csv — pass --kernel-trace or place one at "
+              f"{rpc_dir.parent}/trace_{tag}/kernel_trace.csv), arch={arch_used}")
+    else:
+        print(f"[{tag}] {rpc_dir}: {n_disp} dispatch(es), duration n/a "
+              f"(kernel_trace.csv at {ktrace} had no matching dispatches), arch={arch_used}")
 
     n = dump_all_counters(rpc, analysis_dir / f"metrics_all_{tag}.json")
     print(f"  -> metrics_all_{tag}.json ({n} counters)")
@@ -126,6 +166,10 @@ def main():
                          "Can be passed multiple times.")
     ap.add_argument("--tag", type=str, action="append", required=True,
                     help="Short tag for each --rpc. Must be passed once per --rpc.")
+    ap.add_argument("--kernel-trace", type=Path, action="append", default=None,
+                    help="Optional path to a rocprofv3 kernel_trace.csv for duration "
+                         "reporting. If omitted, sibling `reports/trace_<tag>/...` is "
+                         "auto-resolved. Pass once per --rpc or omit entirely.")
     ap.add_argument("--kernel", type=str, default=None,
                     help="Optional Kernel_Name regex to filter dispatches.")
     ap.add_argument("--arch", type=str, default=None,
@@ -134,16 +178,20 @@ def main():
 
     if len(args.rpc) != len(args.tag):
         ap.error("--rpc and --tag counts must match")
+    if args.kernel_trace is not None and len(args.kernel_trace) != len(args.rpc):
+        ap.error("--kernel-trace, when passed, must be passed once per --rpc")
 
     analysis_dir = args.run_dir / "analysis"
     analysis_dir.mkdir(parents=True, exist_ok=True)
 
+    ktraces = args.kernel_trace or [None] * len(args.rpc)
     collected = {}
-    for rpc, tag in zip(args.rpc, args.tag):
+    for rpc, tag, ktrace in zip(args.rpc, args.tag, ktraces):
         if not rpc.exists():
             print(f"[skip] {rpc} does not exist", file=sys.stderr)
             continue
-        collected[tag] = collect(rpc, tag, analysis_dir, args.kernel, args.arch)
+        collected[tag] = collect(rpc, tag, analysis_dir, args.kernel, args.arch,
+                                 kernel_trace=ktrace)
 
     compare(collected, analysis_dir, args.arch)
 

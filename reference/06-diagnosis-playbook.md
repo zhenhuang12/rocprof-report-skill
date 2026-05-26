@@ -1,6 +1,6 @@
 # Diagnosis Playbook — Pattern → Cause → Fix
 
-For each observed rocprof signal, what does it typically mean, and what's the first fix to try? This synthesizes the CDNA3 / CDNA4 programming principles (the companion `cdna3-cdna4-hip-programming.md` at the repo root) with the profiling signals.
+For each observed rocprof signal, what does it typically mean, and what's the first fix to try? This synthesizes the CDNA3 / CDNA4 programming principles (the companion [`../cdna3-cdna4-hip-programming.md`](../cdna3-cdna4-hip-programming.md) at the skill root) with the profiling signals.
 
 Read this after you've gathered the metrics (via [`05-analysis-dimensions.md`](05-analysis-dimensions.md)) — here you translate metrics into diagnoses and fix directions.
 
@@ -27,7 +27,7 @@ Most kernels will match 2-4 patterns simultaneously. **Rank them by magnitude** 
 ## Pattern A — Small grid / CU idle
 
 **Signals:**
-- `Workgroups_Launched < CU_count × workgroups_per_CU` (e.g., 64 workgroups on a 304-CU MI300X)
+- `Total_Workgroups < CU_count × workgroups_per_CU` — compute `Total_Workgroups` from `prod(Grid_Size) / prod(Workgroup_Size)` (both in `pmc_perf.csv`) and `CU_count` from `sysinfo.csv: num_cu` (e.g., 64 workgroups on a 304-CU MI300X)
 - `SQ_BUSY_CYCLES / GRBM_GUI_ACTIVE < 0.5` averaged over all CUs
 - rocprof-compute wavefront-launch block (`-b 7`) reports "waves per CU < 1"
 - rocprof-compute SoL (`-b 2`): "compute throughput much less than peak; HBM throughput much less than peak"
@@ -59,7 +59,7 @@ Most kernels will match 2-4 patterns simultaneously. **Rank them by magnitude** 
 - Per-CU active cycles span 5-100× between slowest and fastest CU (per-CU SQ_BUSY_CYCLES from `pmc_perf.csv`, or rocprof-compute's workgroup-balance breakdown when available).
 - PMC timeline shape: long gradual tail at the end (visible via `plot_timeline.py`).
 - **Per-XCD divergence** on MI300X SPX: SQ_WAVES per XCD shows one XCD running 30%+ longer than the others.
-- `Workgroups_Launched / (CU_count × waves_per_CU) > 1.05` with partial last wave.
+- `Total_Workgroups / (CU_count × waves_per_CU) > 1.05` with partial last wave (compute `Total_Workgroups` and `CU_count` as in Pattern A).
 
 **Why:** each workgroup iterates some variable-size inner loop. When sequences have vastly different lengths, a few long-sequence workgroups keep running after everyone else finished. On MI300X, this is worse when the slow workgroups happen to be assigned to one XCD.
 
@@ -84,7 +84,7 @@ Most kernels will match 2-4 patterns simultaneously. **Rank them by magnitude** 
 
 **Signals:**
 - rocprof-compute instruction-mix / L1D block (`-b 11` or `-b 15`): "Bytes per wavefront" for global_load_* is much less than the peak 256 B for a coalesced dword load (60 B is bad; for `dwordx4` the peak is 1024 B/wave).
-- `TCP_TCC_READ_REQ_sum / TCP_TOTAL_READ_REQ > 0.7` (most vL1 accesses miss to L2).
+- `TCP_TCC_READ_REQ_sum / TCP_TOTAL_CACHE_ACCESSES_sum > 0.7` (most vL1 accesses miss to L2; `TCP_TOTAL_READ_REQ` does **not** exist on gfx942 / gfx950 — verify with `rocprofv3 -L | grep ^TCP_`).
 - PC-sampling: primary `Wait_Reason` on the offending load line is `WAIT_INST_VMEM` or `WAIT_VMCNT`.
 - ISA shows `global_load_dword` / `global_load_dwordx2` instead of `global_load_dwordx4`.
 
@@ -253,8 +253,8 @@ If `K < 16`: consider batching multiple iterations' results into a vectorized wr
 ## Pattern J — Low achieved vs theoretical occupancy
 
 **Signals:**
-- `Theoretical_Occupancy_pct > 50` but `Achieved_Occupancy_pct << 50`.
-- rocprof-compute wavefront-launch / CS block (`-b 5` / `-b 7`) reports a notable gap with the bottleneck named (`VGPR` / `LDS` / `wkg-size`).
+- rocprof-compute wavefront / CS block (`-b 5`) reports theoretical occupancy > 50% but achieved occupancy << 50% (both are derived metrics — they are NOT separate `pmc_perf.csv` columns).
+- rocprof-compute wavefront-launch block (`-b 7`) names the occupancy limiter (`VGPR` / `LDS` / `wkg-size`).
 
 **Why:** Theoretical occupancy is the max waves that *could* be resident. Achieved is how many are *actually* running. Gap is caused by: stalls (leaves slots empty), imbalance (some CUs empty), short kernel (warmup dominates).
 

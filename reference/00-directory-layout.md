@@ -190,8 +190,11 @@ rocprofv3 --att --att-target-cu 0 \
     -d "$PROFILE_RUN_DIR/reports/att_<tag>" \
     -- "$PROFILE_RUN_DIR/harness/kernel_harness" [args]
 
-# parse
-python3 analyze_reports.py --run-dir "$PROFILE_RUN_DIR" --tag <tag>
+# parse — --rpc and --tag are required, once per report dir
+python3 analyze_reports.py --run-dir "$PROFILE_RUN_DIR" \
+    --rpc "$PROFILE_RUN_DIR/reports/rpc_<tag>" --tag <tag> \
+    --kernel-trace "$PROFILE_RUN_DIR/reports/trace_<tag>/kernel_trace.csv" \
+    --kernel "my_kernel"
 ```
 
 All of the helper scripts in `../helpers/` accept an explicit `--run-dir` (or equivalent path) argument. Pass it explicitly rather than relying on cwd — the scripts assume the standard run layout above and need to find both `reports/` and `analysis/` relative to that root.

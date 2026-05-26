@@ -42,15 +42,20 @@ A complete reusable template lives at [`../helpers/harness_template.hip`](../hel
 Compile with:
 ```bash
 # MI300X only (CDNA3, gfx942)
+# -DHARNESS_FILLED_IN=1 disables the helpers/harness_template.hip guard that
+# stops you from accidentally compiling the unedited template; drop the flag
+# when compiling your own from-scratch harness.
 hipcc -O3 -std=c++17 -gline-tables-only \
       --offload-arch=gfx942 \
       -munsafe-fp-atomics \
+      -DHARNESS_FILLED_IN=1 \
       harness.hip -o harness
 
 # MI300X + MI355X fat binary (ROCm 7+ required for gfx950)
 hipcc -O3 -std=c++17 -gline-tables-only \
       --offload-arch=gfx942 --offload-arch=gfx950 \
       -munsafe-fp-atomics \
+      -DHARNESS_FILLED_IN=1 \
       harness.hip -o harness
 ```
 
@@ -214,7 +219,7 @@ template __global__ void my_kernel<4, 256>(
 
 The launch site in `main()` picks the right instantiation based on a CLI flag.
 
-> **HIP type names:** `__hip_bfloat16` and `__hip_bfloat162` (from `<hip/hip_bf16.h>`) replace `__nv_bfloat16` / `__nv_bfloat162`. `__half` / `__half2` (from `<hip/hip_fp16.h>`) keep the same names. The CUDA→HIP cheat sheet is in [`reference/09-common-issues.md`](09-common-issues.md) and the [HIPIFY device-API support table](https://rocm.docs.amd.com/projects/HIPIFY/en/latest/tables/CUDA_Device_API_supported_by_HIP.html).
+> **HIP type names:** `__hip_bfloat16` and `__hip_bfloat162` (from `<hip/hip_bf16.h>`) replace `__nv_bfloat16` / `__nv_bfloat162`. `__half` / `__half2` (from `<hip/hip_fp16.h>`) keep the same names. The CUDA→HIP cheat sheet is in [`../cdna3-cdna4-hip-programming.md`](../cdna3-cdna4-hip-programming.md) (search "Common pitfalls porting from CUDA") and the [HIPIFY device-API support table](https://rocm.docs.amd.com/projects/HIPIFY/en/latest/tables/CUDA_Device_API_supported_by_HIP.html).
 
 ---
 
